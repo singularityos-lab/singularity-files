@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <template class="SingularityAppsFilesWindow" parent="SingularityWidgetsWindow">
+    <object class="GtkBox" id="files_ui_root">
+      <property name="orientation">horizontal</property>
+      <property name="spacing">0</property>
+      <child>
+        <object class="GtkScrolledWindow" id="content_scroll">
+        </object>
+      </child>
+      <child>
+        <object class="GtkScrolledWindow" id="sidebar_scroll">
+          <child>
+            <object class="GtkBox" id="places_box">
+              <property name="css-classes">navigation-sidebar</property>
+              <property name="margin-bottom">10</property>
+              <property name="margin-end">10</property>
+              <property name="margin-start">10</property>
+              <property name="orientation">vertical</property>
+              <property name="spacing">2</property>
+            </object>
+          </child>
+        </object>
+      </child>
+    </object>
+  </template>
+</interface>

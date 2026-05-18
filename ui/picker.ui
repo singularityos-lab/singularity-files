@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <object class="GtkBox" id="files_picker_ui_root">
+    <property name="orientation">horizontal</property>
+    <property name="spacing">0</property>
+    <child>
+      <object class="GtkScrolledWindow" id="content_scroll">
+      </object>
+    </child>
+    <child>
+      <object class="GtkScrolledWindow" id="picker_sidebar">
+        <child>
+          <object class="GtkBox" id="picker_places">
+            <property name="css-classes">navigation-sidebar</property>
+            <property name="margin-bottom">10</property>
+            <property name="margin-end">8</property>
+            <property name="margin-start">8</property>
+            <property name="orientation">vertical</property>
+            <property name="spacing">2</property>
+          </object>
+        </child>
+      </object>
+    </child>
+  </object>
+</interface>
