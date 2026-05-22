@@ -7,6 +7,12 @@ using Singularity.FileSystem;
 namespace Singularity.Apps {
 
     public class FilesApp : Singularity.Application {
+        private Files.FileOpsManager? _ops = null;
+        private Gtk.Revealer? _ops_banner = null;
+        private Gtk.ProgressBar? _ops_progress_bar = null;
+        private Gtk.Label? _ops_label = null;
+        private Gtk.Button? _ops_cancel_btn = null;
+
         private File current_folder;
         private GLib.ListStore file_store;
         private ColumnView file_view;
@@ -22,6 +28,9 @@ namespace Singularity.Apps {
         public bool portal_mode = false;
         public bool multiple_mode = false;
         private Stack? view_stack_ref = null;
+        private Singularity.Widgets.StatusPage? _empty_page = null;
+        private File? _picker_selected_file = null;
+        private FileInfo? _picker_selected_info = null;
         private Stack path_bar_stack;
         private Entry path_entry_widget;
         private File? clipboard_file = null;
@@ -75,6 +84,8 @@ namespace Singularity.Apps {
 
         private void update_view_mode() {
             if (view_stack_ref != null) {
+                if (view_stack_ref.visible_child_name == "empty") return;
+
                 string mode = settings.get_string("view-mode");
                 if (mode == "column") {
                     view_stack_ref.visible_child_name = "column";
@@ -88,6 +99,58 @@ namespace Singularity.Apps {
                 } else {
                     view_stack_ref.visible_child_name = (mode == "grid") ? "grid" : "list";
                 }
+            }
+        }
+
+        /**
+         * Ensure the view_stack has an "empty" page with a centred StatusPage.
+         * Idempotent - safe to call from multiple init paths.
+         */
+        private void ensure_empty_page() {
+            if (view_stack_ref == null) return;
+            if (view_stack_ref.get_child_by_name("empty") != null) return;
+            _empty_page = new Singularity.Widgets.StatusPage();
+            _empty_page.icon_name = "folder-symbolic";
+            _empty_page.title = "This folder is empty";
+            _empty_page.description = "Drop files here or use the menu to add new items.";
+            view_stack_ref.add_named(_empty_page, "empty");
+        }
+
+        /**
+         * Pick the right StatusPage copy for the current folder (Trash, Recent,
+         * search results, …) and switch the view_stack to "empty" or back to
+         * the user's view mode.
+         */
+        private void sync_empty_state() {
+            if (view_stack_ref == null) return;
+            ensure_empty_page();
+            bool is_empty = file_store == null || file_store.get_n_items() == 0;
+            if (is_empty && current_folder != null) {
+                string uri = current_folder.get_uri();
+                if (uri.has_prefix("trash://")) {
+                    _empty_page.icon_name = "user-trash-symbolic";
+                    _empty_page.title = "Trash is empty";
+                    _empty_page.description = "Deleted files appear here. They are not actually removed until you empty the Trash.";
+                } else if (uri.has_prefix("recent://")) {
+                    _empty_page.icon_name = "document-open-recent-symbolic";
+                    _empty_page.title = "No recent files";
+                    _empty_page.description = "Files you open will appear here for quick access.";
+                } else if (current_search != "") {
+                    _empty_page.icon_name = "system-search-symbolic";
+                    _empty_page.title = "No matches";
+                    _empty_page.description = "Try a different search term, or clear the filter with Escape.";
+                } else {
+                    _empty_page.icon_name = "folder-symbolic";
+                    _empty_page.title = "This folder is empty";
+                    _empty_page.description = "Drop files here, paste with Ctrl+V or use the menu to add new items.";
+                }
+                view_stack_ref.visible_child_name = "empty";
+            } else {
+                string mode = settings.get_string("view-mode");
+                view_stack_ref.visible_child_name =
+                    (mode == "column") ? "column"
+                    : (mode == "grid") ? "grid"
+                    : "list";
             }
         }
 
@@ -165,21 +228,70 @@ namespace Singularity.Apps {
 
         public override int command_line(ApplicationCommandLine command_line) {
             var args = command_line.get_arguments();
+            _startup_folder = null;
             for (int i = 0; i < args.length; i++) {
                 if (args[i] == "--picker") picker_mode = true;
-                if (args[i] == "--portal-mode") { portal_mode = true; picker_mode = true; }
-                if (args[i] == "--save") save_mode = true;
-                if (args[i] == "--multiple") multiple_mode = true;
-                if (args[i].has_prefix("--title=")) picker_title = args[i].substring(8);
-                if (args[i].has_prefix("--current-name=")) picker_current_name = args[i].substring(15);
+                else if (args[i] == "--portal-mode") { portal_mode = true; picker_mode = true; }
+                else if (args[i] == "--save") save_mode = true;
+                else if (args[i] == "--multiple") multiple_mode = true;
+                else if (args[i].has_prefix("--title=")) picker_title = args[i].substring(8);
+                else if (args[i].has_prefix("--current-name=")) picker_current_name = args[i].substring(15);
+                else if (i > 0 && !args[i].has_prefix("--")) {
+                    // Positional argument: a folder to open. Accept a path or
+                    // a file:// URI; relative paths resolve against the CWD
+                    // the command line was invoked from.
+                    var f = args[i].has_prefix("file://")
+                        ? GLib.File.new_for_uri(args[i])
+                        : GLib.File.new_for_commandline_arg_and_cwd(
+                              args[i], command_line.get_cwd());
+                    if (f.query_exists(null)) _startup_folder = f;
+                }
             }
             activate();
             return 0;
         }
 
+        // Folder to open on launch, set from a positional command-line arg.
+        private GLib.File? _startup_folder = null;
+
+        private const string FILES_CSS = """
+.files-ops-banner {
+    background-color: alpha(@text_color, 0.06);
+    border-radius: 10px;
+    padding: 6px 10px;
+    box-shadow: 0 -1px 4px alpha(black, 0.08);
+}
+.files-ops-progress {
+    min-height: 10px;
+    min-width: 120px;
+}
+.files-ops-progress > trough {
+    min-height: 10px;
+    border-radius: 999px;
+    background-color: alpha(@text_color, 0.15);
+}
+.files-ops-progress > trough > progress {
+    min-height: 10px;
+    border-radius: 999px;
+    background-color: @accent_bg_color;
+    background-image: none;
+}
+""";
+
+        private void load_files_css() {
+            var provider = new Gtk.CssProvider();
+            provider.load_from_data(FILES_CSS.data);
+            var display = Gdk.Display.get_default();
+            if (display != null)
+                Gtk.StyleContext.add_provider_for_display(
+                    display, provider,
+                    Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
+        }
+
         protected override void startup() {
             base.startup();
 
+            load_files_css();
             setup_menu();
 
             var source = SettingsSchemaSource.get_default();
@@ -454,7 +566,7 @@ namespace Singularity.Apps {
                 files_win.files_ui_root.remove(content_scroll);
                 files_win.files_ui_root.remove(sidebar);
                 setup_file_view(content_scroll);
-                window.set_content(content_scroll);
+                window.set_content(build_content_with_ops_banner(content_scroll));
                 var places_box = files_win.places_box;
                 places_box.prepend(new Singularity.Widgets.ToolbarSpacer.with_height(70));
                 add_place_button(places_box, "Recent", "recent://", "document-open-recent-symbolic");
@@ -624,12 +736,17 @@ namespace Singularity.Apps {
             win_key.key_pressed.connect(on_key_pressed);
             ((Gtk.Widget)window).add_controller(win_key);
 
-            string last_folder_uri = settings.get_string("last-folder");
             GLib.File start_folder;
-            if (last_folder_uri != "" && GLib.File.new_for_uri(last_folder_uri).query_exists(null)) {
-                start_folder = GLib.File.new_for_uri(last_folder_uri);
+            if (_startup_folder != null) {
+                // Explicit folder passed on the command line wins.
+                start_folder = _startup_folder;
             } else {
-                start_folder = File.new_for_path(Environment.get_home_dir());
+                string last_folder_uri = settings.get_string("last-folder");
+                if (last_folder_uri != "" && GLib.File.new_for_uri(last_folder_uri).query_exists(null)) {
+                    start_folder = GLib.File.new_for_uri(last_folder_uri);
+                } else {
+                    start_folder = File.new_for_path(Environment.get_home_dir());
+                }
             }
             navigate_user(start_folder);
 
@@ -1141,18 +1258,19 @@ namespace Singularity.Apps {
                 paste_files();
                 return true;
             }
-            // Delete / KP_Delete - move selected file to trash
+            // Delete / KP_Delete - move selected file to trash (async via ops manager)
             if (!ctrl && (keyval == Gdk.Key.Delete || keyval == Gdk.Key.KP_Delete)) {
                 var selected = get_selected_items();
-                for (int i = 0; i < selected.length; i++) {
-                    var item = selected.get(i);
-                    try {
-                        item.file.trash(null);
-                    } catch (Error e) {
-                        warning("Trash failed: %s", e.message);
-                    }
+                if (selected.length > 0) {
+                    ensure_ops_manager();
+                    var files = new GLib.File[selected.length];
+                    for (int i = 0; i < selected.length; i++)
+                        files[i] = selected.get(i).file;
+                    var op = _ops.start_trash(files);
+                    op.completed.connect(() => {
+                        if (current_folder != null) navigate_to.begin(current_folder);
+                    });
                 }
-                if (selected.length > 0 && current_folder != null) navigate_to.begin(current_folder);
                 return true;
             }
             // "/" - focus path entry
@@ -1281,19 +1399,107 @@ namespace Singularity.Apps {
 
         private void paste_files() {
             if (clipboard_file == null || current_folder == null) return;
-            var dest = current_folder.get_child(clipboard_file.get_basename());
-            try {
-                if (clipboard_is_cut) {
-                    clipboard_file.move(dest, FileCopyFlags.NONE, null, null);
-                    clipboard_file = null;
-                    clipboard_is_cut = false;
-                } else {
-                    clipboard_file.copy(dest, FileCopyFlags.NONE, null, null);
-                }
-                navigate_to.begin(current_folder);
-            } catch (Error e) {
-                warning("Paste failed: %s", e.message);
+            ensure_ops_manager();
+            bool was_cut = clipboard_is_cut;
+            var src = clipboard_file;
+            var op = _ops.start_transfer(new GLib.File[] { src }, current_folder, was_cut);
+            if (was_cut) {
+                clipboard_file = null;
+                clipboard_is_cut = false;
             }
+            op.completed.connect(() => {
+                if (current_folder != null) navigate_to.begin(current_folder);
+            });
+            navigate_to.begin(current_folder);
+        }
+
+        private void ensure_ops_manager() {
+            if (_ops == null) {
+                _ops = new Files.FileOpsManager();
+                _ops.state_changed.connect(() => update_ops_banner());
+            }
+        }
+
+        // ── Operations banner ─────────────────────────────────────────────────
+        private Gtk.Widget build_content_with_ops_banner(Gtk.Widget content) {
+            ensure_ops_manager();
+
+            var outer = new Gtk.Box(Orientation.VERTICAL, 0);
+            content.hexpand = true;
+            content.vexpand = true;
+            outer.append(content);
+
+            _ops_banner = new Gtk.Revealer();
+            _ops_banner.transition_type = Gtk.RevealerTransitionType.SLIDE_UP;
+            _ops_banner.transition_duration = 180;
+            _ops_banner.reveal_child = false;
+
+            var bar = new Gtk.Box(Orientation.HORIZONTAL, 10);
+            bar.add_css_class("files-ops-banner");
+            bar.margin_start = 12;
+            bar.margin_end = 12;
+            bar.margin_top = 6;
+            bar.margin_bottom = 6;
+
+            var icon = new Gtk.Image.from_icon_name("emblem-synchronizing-symbolic");
+            icon.pixel_size = 18;
+            bar.append(icon);
+
+            _ops_label = new Gtk.Label("");
+            _ops_label.halign = Align.START;
+            _ops_label.hexpand = false;
+            _ops_label.ellipsize = Pango.EllipsizeMode.MIDDLE;
+            _ops_label.max_width_chars = 40;
+            bar.append(_ops_label);
+
+            _ops_progress_bar = new Gtk.ProgressBar();
+            _ops_progress_bar.hexpand = true;
+            _ops_progress_bar.valign = Align.CENTER;
+            _ops_progress_bar.add_css_class("files-ops-progress");
+            bar.append(_ops_progress_bar);
+
+            _ops_cancel_btn = new Gtk.Button.from_icon_name("process-stop-symbolic");
+            _ops_cancel_btn.add_css_class("flat");
+            _ops_cancel_btn.tooltip_text = "Cancel all operations";
+            _ops_cancel_btn.clicked.connect(() => {
+                if (_ops == null) return;
+                foreach (var op in _ops.ops) {
+                    if (!op.finished) op.cancellable.cancel();
+                }
+            });
+            bar.append(_ops_cancel_btn);
+
+            _ops_banner.set_child(bar);
+            outer.append(_ops_banner);
+            return outer;
+        }
+
+        private void update_ops_banner() {
+            if (_ops == null || _ops_banner == null) return;
+            int active = _ops.active_count();
+            bool reveal = active > 0;
+            bool has_recent_finished = false;
+            foreach (var op in _ops.ops) if (op.finished) { has_recent_finished = true; break; }
+            if (!reveal && has_recent_finished) reveal = true;
+
+            _ops_banner.reveal_child = reveal;
+            if (!reveal) return;
+
+            double frac = _ops.aggregate_fraction();
+            _ops_progress_bar.fraction = frac.clamp(0, 1);
+
+            string label_text;
+            if (active == 0 && has_recent_finished) {
+                label_text = "Done";
+            } else if (_ops.ops.size == 1) {
+                var op = _ops.ops[0];
+                label_text = op.errored
+                    ? "Failed: " + (op.error_message ?? "")
+                    : op.display_name;
+            } else {
+                label_text = "%d file operations".printf(active);
+            }
+            _ops_label.label = label_text;
         }
 
         private void show_background_context_menu(Widget widget, double mx, double my) {
@@ -1905,6 +2111,14 @@ namespace Singularity.Apps {
                     }
                 }
                 uri = uris.str;
+            } else if (_picker_selected_file != null) {
+                // Column-browser selection (file_view's get_selected_items()
+                // doesn't see it - we tracked it separately on row activate).
+                bool is_dir = _picker_selected_info != null
+                    && _picker_selected_info.get_file_type() == FileType.DIRECTORY;
+                if (!is_dir || multiple_mode) {
+                    uri = _picker_selected_file.get_uri();
+                }
             }
 
             if (uri == "" && !save_mode && current_folder != null) {
@@ -2400,6 +2614,29 @@ namespace Singularity.Apps {
             }
         }
 
+        /**
+         * After populating file_store for a "special" URI (recent://, smb://),
+         * switch the view stack to match the user's current view-mode. In
+         * column mode this means rebuilding the first column too - since
+         * those URIs don't enumerate via the generic FileEnumerator and need
+         * to flow through their custom FileProvider in fill_column_pane.
+         */
+        private void sync_after_special_uri(File folder) {
+            if (view_stack_ref == null) return;
+            string mode = settings.get_string("view-mode");
+            if (mode == "column") {
+                view_stack_ref.visible_child_name = "column";
+                _col_panes = {};
+                _col_seps = {};
+                _col_lists = {};
+                _col_folders = {};
+                _col_count = 0;
+                load_column_pane(0, folder);
+            } else {
+                view_stack_ref.visible_child_name = (mode == "grid") ? "grid" : "list";
+            }
+        }
+
         private void navigate_to_uri(string uri) {
             clear_search();
             if (uri == "recent://") {
@@ -2427,10 +2664,7 @@ namespace Singularity.Apps {
                         if (empty_trash_btn != null) empty_trash_btn.visible = false;
                         // Highlight "Recent" in the sidebar
                         sync_sidebar_active(File.new_for_uri("recent://"));
-                        if (view_stack_ref != null) {
-                            string mode = settings.get_string("view-mode");
-                            view_stack_ref.visible_child_name = (mode == "grid") ? "grid" : "list";
-                        }
+                        sync_after_special_uri(File.new_for_uri("recent://"));
                     } catch (Error e) {
                         warning("Failed to load recent files: %s", e.message);
                     }
@@ -2460,10 +2694,7 @@ namespace Singularity.Apps {
                 current_folder = File.new_for_uri(uri);
                 if (empty_trash_btn != null) empty_trash_btn.visible = false;
                 sync_sidebar_active(current_folder);
-                if (view_stack_ref != null) {
-                    string mode = settings.get_string("view-mode");
-                    view_stack_ref.visible_child_name = (mode == "grid") ? "grid" : "list";
-                }
+                sync_after_special_uri(current_folder);
 
                 // Now enumerate shares asynchronously and append them
                 var provider = new SambaProvider();
@@ -2689,6 +2920,9 @@ namespace Singularity.Apps {
 
                 // Atomic update: remove everything and add everything in ONE signal
                 file_store.splice(0, file_store.get_n_items(), objects);
+
+                // Switch to the empty StatusPage (or back to the regular view).
+                sync_empty_state();
 
                 // Auto-select first result when search is active
                 if (current_search != "" && file_store.get_n_items() > 0) {
@@ -2957,20 +3191,48 @@ namespace Singularity.Apps {
 
         private async void fill_column_pane(int idx, File folder, ListBox list_box) {
             try {
-                var enumerator = yield folder.enumerate_children_async(
-                    "standard::*,standard::icon,standard::is-hidden,time::modified",
-                    FileQueryInfoFlags.NONE, Priority.DEFAULT, null);
-
                 bool show_hidden = settings.get_boolean("show-hidden");
                 var items = new GenericArray<FileItem>();
 
-                while (true) {
-                    var files = yield enumerator.next_files_async(100, Priority.DEFAULT, null);
-                    if (files == null || files.length() == 0) break;
-                    foreach (var info in files) {
-                        if (!show_hidden && info.get_is_hidden()) continue;
-                        var child = folder.get_child(info.get_name());
-                        items.add(new FileItem(child, info));
+                // Route smb:// and recent:// through their respective
+                // FileProviders - enumerate_children_async returns nothing
+                // for those special URIs, which is why column mode used to
+                // show an empty Network page.
+                string uri = folder.get_uri();
+                if (uri.has_prefix("smb://") && uri.length <= 6) {
+                    // Seed with the synthetic "New Connection" entry so the
+                    // column matches what grid/list view shows.
+                    var conn_info = new GLib.FileInfo();
+                    conn_info.set_name("connect-to-server");
+                    conn_info.set_display_name("New Connection");
+                    conn_info.set_file_type(GLib.FileType.UNKNOWN);
+                    conn_info.set_icon(new GLib.ThemedIcon("network-server"));
+                    items.add(new FileItem(
+                        GLib.File.new_for_uri("x-singularity://connect-to-server"),
+                        conn_info));
+                    var provider = new Singularity.FileSystem.SambaProvider();
+                    try {
+                        var shares = yield provider.enumerate(uri, null);
+                        foreach (var it in shares) items.add(it);
+                    } catch { /* network may be slow/missing - show stub only */ }
+                } else if (uri.has_prefix("recent://")) {
+                    var provider = new Singularity.FileSystem.RecentProvider();
+                    try {
+                        var recents = yield provider.enumerate(uri, null);
+                        foreach (var it in recents) items.add(it);
+                    } catch {}
+                } else {
+                    var enumerator = yield folder.enumerate_children_async(
+                        "standard::*,standard::icon,standard::is-hidden,time::modified",
+                        FileQueryInfoFlags.NONE, Priority.DEFAULT, null);
+                    while (true) {
+                        var files = yield enumerator.next_files_async(100, Priority.DEFAULT, null);
+                        if (files == null || files.length() == 0) break;
+                        foreach (var info in files) {
+                            if (!show_hidden && info.get_is_hidden()) continue;
+                            var child = folder.get_child(info.get_name());
+                            items.add(new FileItem(child, info));
+                        }
                     }
                 }
 
@@ -2982,6 +3244,23 @@ namespace Singularity.Apps {
                     if (!dir_a && dir_b) return  1;
                     return a.name.collate(b.name);
                 });
+
+                // Empty-state placeholder for the column pane.
+                if (items.length == 0) {
+                    var empty_row = new ListBoxRow();
+                    empty_row.selectable = false;
+                    empty_row.activatable = false;
+                    empty_row.add_css_class("col-browser-empty");
+                    var ep = new Singularity.Widgets.StatusPage();
+                    ep.icon_name = "folder-symbolic";
+                    ep.title = "Empty";
+                    ep.description = "";
+                    ep.margin_top = 24;
+                    ep.margin_bottom = 24;
+                    empty_row.set_child(ep);
+                    list_box.append(empty_row);
+                    return;
+                }
 
                 for (int i = 0; i < items.length; i++) {
                     var item = items.get(i);
@@ -3027,9 +3306,33 @@ namespace Singularity.Apps {
                 list_box.row_activated.connect((row) => {
                     var fi = row.get_data<FileItem>("col-file-item");
                     if (fi == null) return;
+                    // Picker mode: a click/dbl-click in the column should
+                    // SELECT for the picker, not launch / open in browser.
+                    // Folders still descend into a new column, but files
+                    // and "everything else" become the picker selection
+                    // (single click) or commit it (double click).
+                    if (picker_mode) {
+                        if (fi.is_folder) {
+                            load_column_pane(captured_idx2 + 1, fi.file);
+                            current_folder = fi.file;
+                            update_path_bar(fi.file);
+                            // Selecting a folder is also a valid picker
+                            // choice (save-mode / folder pickers).
+                            _picker_selected_file = fi.file;
+                            _picker_selected_info = fi.info;
+                        } else {
+                            _picker_selected_file = fi.file;
+                            _picker_selected_info = fi.info;
+                        }
+                        // row_activated fires on Enter + double-click; we
+                        // treat both as confirm. Single-click on a row in
+                        // a ListBox does NOT fire row_activated, just
+                        // selection change - separately handled below.
+                        submit_picker_selection();
+                        return;
+                    }
                     if (fi.is_folder) {
                         load_column_pane(captured_idx2 + 1, fi.file);
-                        // Navigate main view too so path bar / back button stay in sync
                         current_folder = fi.file;
                         update_path_bar(fi.file);
                     } else if (is_archive_file(fi.info.get_content_type())) {
@@ -3038,6 +3341,19 @@ namespace Singularity.Apps {
                         launch_file(fi.file);
                     }
                 });
+
+                // In picker mode, also update the picker's current selection
+                // on a single-click - so the user can pick a row and confirm
+                // via the toolbar button without double-clicking.
+                if (picker_mode) {
+                    list_box.row_selected.connect((row) => {
+                        if (row == null) return;
+                        var fi = row.get_data<FileItem>("col-file-item");
+                        if (fi == null) return;
+                        _picker_selected_file = fi.file;
+                        _picker_selected_info = fi.info;
+                    });
+                }
 
             } catch (Error e) {
                 warning("Column pane load error: %s", e.message);
