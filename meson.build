@@ -30,6 +30,7 @@ sources = files(
   'src/app.vala',
   'src/connect_server_dialog.vala',
   'src/portal_service.vala',
+  'src/file_ops_manager.vala',
 )
 
 executable('singularity-files',
