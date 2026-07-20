@@ -19,6 +19,7 @@ namespace Singularity.Apps {
         private GLib.ListStore file_store;
         private ColumnView file_view;
         private ColumnViewColumn col_size;
+        private ColumnViewColumn col_author;
         private ColumnViewColumn col_type;
         private ColumnViewColumn col_modified;
         private Box path_bar;
@@ -35,7 +36,7 @@ namespace Singularity.Apps {
         private FileInfo? _picker_selected_info = null;
         private Stack path_bar_stack;
         private Entry path_entry_widget;
-        private File? clipboard_file = null;
+        private GLib.GenericArray<File> clipboard_files = new GLib.GenericArray<File>();
         private bool clipboard_is_cut = false;
         private int grid_icon_size = 48;
         private GridView? _grid_view = null;
@@ -591,6 +592,18 @@ namespace Singularity.Apps {
                 _watch_trash_state();
                 add_place_button(places_box, "Network", "smb://", "network-workgroup-symbolic");
 
+                // ush integration: browse the Linux sandbox home (ush) like a disk.
+                string? ush_home = ush_linux_home();
+                if (ush_home != null) {
+                    places_box.append(new Separator(Orientation.HORIZONTAL));
+                    add_place_button(places_box, "Linux files", ush_home, "ush-penguin-symbolic");
+                }
+                // dsh integration (same as above but for the development environment)
+                string? dev_home = ush_dev_home();
+                if (dev_home != null) {
+                    add_place_button(places_box, "Developer files", dev_home, "applications-engineering-symbolic");
+                }
+
                 // Dynamic bookmarks section
                 _places_box = places_box;
                 _bookmarks_section = new Box(Orientation.VERTICAL, 2);
@@ -911,14 +924,50 @@ namespace Singularity.Apps {
                     }
                 }
                 // Cut visual feedback
-                bool is_cut = clipboard_is_cut && clipboard_file != null &&
-                              clipboard_file.get_uri() == file_item.file.get_uri();
+                bool is_cut = clipboard_is_cut && clipboard_has(file_item.file);
                 if (is_cut) box.add_css_class("cut"); else box.remove_css_class("cut");
             });
             var col_name = new ColumnViewColumn("Name", factory_name);
             col_name.expand = true;
             col_name.resizable = true;
             file_view.append_column(col_name);
+
+            var factory_author = new SignalListItemFactory();
+            factory_author.setup.connect((item) => {
+                var list_item = (ListItem)item;
+                var row = new Box(Orientation.HORIZONTAL, 6);
+                row.halign = Align.START;
+                var av = new Singularity.Widgets.Avatar(20);
+                av.visible = false;
+                var label = new Label("");
+                label.add_css_class("dim-label");
+                row.append(av);
+                row.append(label);
+                row.set_data<Singularity.Widgets.Avatar>("author-av", av);
+                row.set_data<Label>("author-lbl", label);
+                list_item.set_child(row);
+            });
+            factory_author.bind.connect((item) => {
+                var list_item = (ListItem)item;
+                var row = (Box)list_item.get_child();
+                var av = row.get_data<Singularity.Widgets.Avatar>("author-av");
+                var label = row.get_data<Label>("author-lbl");
+                var file_item = (FileItem)list_item.get_item();
+                string user = file_item.info.get_attribute_string("owner::user") ?? "";
+                label.label = user;
+                string? apath = avatar_path_for_user(user);
+                if (apath != null) {
+                    av.set_from_file(apath);
+                    av.visible = true;
+                } else {
+                    av.visible = false;
+                }
+            });
+            col_author = new ColumnViewColumn("Author", factory_author);
+            col_author.resizable = true;
+            col_author.fixed_width = 150;
+            file_view.insert_column(1, col_author);
+
             var factory_size = new SignalListItemFactory();
             factory_size.setup.connect((item) => {
                 var list_item = (ListItem)item;
@@ -1082,6 +1131,13 @@ namespace Singularity.Apps {
                 thumb_overlay.set_child(img);
                 thumb_overlay.add_overlay(spinner);
                 thumb_overlay.add_overlay(cut_badge);
+                var owner_av = new Singularity.Widgets.Avatar(22);
+                owner_av.halign = Align.END;
+                owner_av.valign = Align.END;
+                owner_av.margin_end = 2;
+                owner_av.margin_bottom = 2;
+                owner_av.visible = false;
+                thumb_overlay.add_overlay(owner_av);
                 var label = new Label("");
                 label.ellipsize = Pango.EllipsizeMode.END;
                 label.wrap = true;
@@ -1095,6 +1151,7 @@ namespace Singularity.Apps {
                 box.set_data<Image>("thumb-img", img);
                 box.set_data<Spinner>("thumb-spinner", spinner);
                 box.set_data<Image>("cut-badge-img", cut_badge);
+                box.set_data<Singularity.Widgets.Avatar>("owner-av", owner_av);
                 // Right-click context menu for grid view
                 var gesture = new GestureClick();
                 gesture.button = 3;
@@ -1167,10 +1224,22 @@ namespace Singularity.Apps {
                     }
                 }
                 // Cut visual feedback
-                bool is_cut = clipboard_is_cut && clipboard_file != null &&
-                              clipboard_file.get_uri() == file_item.file.get_uri();
+                bool is_cut = clipboard_is_cut && clipboard_has(file_item.file);
                 cut_badge.visible = is_cut;
                 if (is_cut) box.add_css_class("cut"); else box.remove_css_class("cut");
+                // Owner avatar badge (folders owned by a user with a picture)
+                var owner_av = box.get_data<Singularity.Widgets.Avatar>("owner-av");
+                if (owner_av != null) {
+                    string? apath = (file_item.info.get_file_type() == FileType.DIRECTORY)
+                        ? avatar_path_for_user(file_item.info.get_attribute_string("owner::user") ?? "")
+                        : null;
+                    if (apath != null) {
+                        owner_av.set_from_file(apath);
+                        owner_av.visible = true;
+                    } else {
+                        owner_av.visible = false;
+                    }
+                }
             });
             grid_factory.unbind.connect((item) => {
                 var list_item = (ListItem)item;
@@ -1181,6 +1250,8 @@ namespace Singularity.Apps {
                 if (img != null) img.set_data<string>("thumb-for-path", "");
                 if (spinner != null) { spinner.spinning = false; spinner.visible = false; }
                 if (cut_badge != null) cut_badge.visible = false;
+                var owner_av = box.get_data<Singularity.Widgets.Avatar>("owner-av");
+                if (owner_av != null) owner_av.visible = false;
                 box.remove_css_class("cut");
             });
             grid_view.activate.connect((pos) => {
@@ -1261,6 +1332,117 @@ namespace Singularity.Apps {
             public abstract void close_preview () throws Error;
         }
 
+        // ush integration: host-only broker interface (the guest can't reach the
+        // session bus). trust_dir/untrust_dir back "Share with Linux".
+        [DBus (name = "io.github.singularityos_lab.ush.Broker1")]
+        private interface UshBroker : Object {
+            public abstract void trust_dir (string path) throws Error;
+            public abstract void untrust_dir (string path) throws Error;
+            public abstract bool is_dir_trusted (string path) throws Error;
+            public abstract string list_dev_dirs () throws Error;
+        }
+
+        // host paths shared with Linux, read straight from the broker policy file.
+        private string[] ush_list_shared_dirs() {
+            string path = Path.build_filename(Environment.get_home_dir(),
+                ".local", "share", "ush", "policy.json");
+            string[] result = {};
+            try {
+                var parser = new Json.Parser();
+                parser.load_from_file(path);
+                var root = parser.get_root();
+                if (root == null) return {};
+                var arr = root.get_array();
+                if (arr == null) return {};
+                for (uint i = 0; i < arr.get_length(); i++) {
+                    var obj = arr.get_object_element(i);
+                    if (obj == null) continue;
+                    if (obj.get_string_member_with_default("category", "") != "devdir") continue;
+                    if (obj.get_string_member_with_default("decision", "") != "allow") continue;
+                    string res = obj.get_string_member_with_default("resource", "");
+                    if (res != "") result += res;
+                }
+            } catch (Error e) {
+                return {};
+            }
+            return result;
+        }
+
+        // ush guest home (its private layer), or null if ush isn't installed.
+        private string? ush_linux_home() {
+            string p = Path.build_filename(Environment.get_home_dir(),
+                ".local", "share", "ush", "layers", "persistent", "home");
+            if (FileUtils.test(p, FileTest.IS_DIR))
+                return p;
+            return null;
+        }
+
+        // dsh developer home, or null until the dev environment is first launched.
+        private string? ush_dev_home() {
+            string p = Path.build_filename(Environment.get_home_dir(),
+                ".local", "share", "ush", "layers", "persistent", "dev-home");
+            if (FileUtils.test(p, FileTest.IS_DIR))
+                return p;
+            return null;
+        }
+
+        // dir to share for a menu item (the folder, or a file's parent); null
+        // inside ush storage itself.
+        private string? ush_share_target(FileItem item) {
+            if (ush_linux_home() == null)
+                return null;
+            string? fpath = item.file.get_path();
+            if (fpath == null)
+                return null;
+            string ush_root = Path.build_filename(Environment.get_home_dir(),
+                ".local", "share", "ush");
+            if (fpath == ush_root || fpath.has_prefix(ush_root + "/"))
+                return null;
+            return item.is_folder ? fpath : Path.get_dirname(fpath);
+        }
+
+        private UshBroker? ush_broker_proxy() {
+            try {
+                return Bus.get_proxy_sync<UshBroker>(BusType.SESSION,
+                    "io.github.singularityos_lab.ush.Broker",
+                    "/io/github/singularityos_lab/ush/Broker");
+            } catch (Error e) {
+                warning("ush: broker proxy failed: %s", e.message);
+                return null;
+            }
+        }
+
+        private bool ush_is_dir_trusted(string path) {
+            var b = ush_broker_proxy();
+            if (b == null) return false;
+            try {
+                return b.is_dir_trusted(path);
+            } catch (Error e) {
+                return false;
+            }
+        }
+
+        private void ush_set_dir_shared(string path, bool shared) {
+            var b = ush_broker_proxy();
+            if (b == null) {
+                warning("ush: broker unavailable; is ush-broker running?");
+                return;
+            }
+            try {
+                if (shared) b.trust_dir(path);
+                else b.untrust_dir(path);
+            } catch (Error e) {
+                warning("ush: share toggle failed: %s", e.message);
+                return;
+            }
+            var notif = new Notification(shared ? _("Shared with Linux") : _("Stopped sharing with Linux"));
+            notif.set_body(shared
+                ? _("The ush shell can now read and write %s.").printf(path)
+                : _("The ush shell will no longer access %s.").printf(path));
+            notif.set_icon(new ThemedIcon("ush-penguin"));
+            this.send_notification("ush-share", notif);
+        }
+
         private bool on_key_pressed(uint keyval, uint keycode, Gdk.ModifierType state) {
             bool ctrl = (state & Gdk.ModifierType.CONTROL_MASK) != 0;
 
@@ -1306,7 +1488,7 @@ namespace Singularity.Apps {
             // ESC - cancel cut mode
             if (!picker_mode && keyval == Gdk.Key.Escape && clipboard_is_cut) {
                 clipboard_is_cut = false;
-                clipboard_file = null;
+                clipboard_files = new GLib.GenericArray<File>();
                 if (current_folder != null) navigate_to.begin(current_folder);
                 return true;
             }
@@ -1336,8 +1518,7 @@ namespace Singularity.Apps {
                 var selected = get_selected_items();
                 if (selected.length > 0) {
                     bool was_cut = clipboard_is_cut;
-                    clipboard_file = selected.get(0).file;
-                    clipboard_is_cut = false;
+                    set_clipboard(selected, false);
                     if (was_cut && current_folder != null) navigate_to.begin(current_folder);
                 }
                 return true;
@@ -1346,8 +1527,7 @@ namespace Singularity.Apps {
             if (ctrl && (keyval == Gdk.Key.x || keyval == Gdk.Key.k)) {
                 var selected = get_selected_items();
                 if (selected.length > 0) {
-                    clipboard_file = selected.get(0).file;
-                    clipboard_is_cut = true;
+                    set_clipboard(selected, true);
                     if (current_folder != null) navigate_to.begin(current_folder);
                 }
                 return true;
@@ -1502,14 +1682,49 @@ namespace Singularity.Apps {
             return false;
         }
 
+        private string? avatar_path_for_user(string user) {
+            if (user == "") return null;
+            string p = "/var/lib/AccountsService/icons/" + user;
+            if (FileUtils.test(p, FileTest.EXISTS)) return p;
+            return null;
+        }
+
+        private bool clipboard_has(File f) {
+            for (int i = 0; i < clipboard_files.length; i++)
+                if (clipboard_files.get(i).get_uri() == f.get_uri()) return true;
+            return false;
+        }
+
+        private void set_clipboard(GenericArray<FileItem> items, bool cut) {
+            clipboard_files = new GLib.GenericArray<File>();
+            for (int i = 0; i < items.length; i++)
+                clipboard_files.add(items.get(i).file);
+            clipboard_is_cut = cut;
+        }
+
+        private void clipboard_set_for_menu(FileItem item, bool cut) {
+            var selected = get_selected_items();
+            bool item_selected = false;
+            for (int i = 0; i < selected.length; i++)
+                if (selected.get(i).file.get_uri() == item.file.get_uri()) { item_selected = true; break; }
+            if (selected.length > 1 && item_selected) {
+                set_clipboard(selected, cut);
+            } else {
+                clipboard_files = new GLib.GenericArray<File>();
+                clipboard_files.add(item.file);
+                clipboard_is_cut = cut;
+            }
+        }
+
         private void paste_files() {
-            if (clipboard_file == null || current_folder == null) return;
+            if (clipboard_files.length == 0 || current_folder == null) return;
             ensure_ops_manager();
             bool was_cut = clipboard_is_cut;
-            var src = clipboard_file;
-            var op = _ops.start_transfer(new GLib.File[] { src }, current_folder, was_cut);
+            var srcs = new GLib.File[clipboard_files.length];
+            for (int i = 0; i < clipboard_files.length; i++) srcs[i] = clipboard_files.get(i);
+            var op = _ops.start_transfer(srcs, current_folder, was_cut);
             if (was_cut) {
-                clipboard_file = null;
+                clipboard_files = new GLib.GenericArray<File>();
                 clipboard_is_cut = false;
             }
             op.completed.connect(() => {
@@ -1642,7 +1857,7 @@ namespace Singularity.Apps {
             menu.add_item("New Folder", "folder-new-symbolic", () => {
                 show_new_folder_dialog();
             });
-            if (clipboard_file != null) {
+            if (clipboard_files.length > 0) {
                 menu.add_separator();
                 menu.add_item("Paste", "edit-paste-symbolic", () => {
                     paste_files();
@@ -1651,6 +1866,13 @@ namespace Singularity.Apps {
             menu.add_separator();
             menu.add_item("Open Terminal Here", "utilities-terminal-symbolic", () => {
                 launch_terminal();
+            });
+            menu.add_item("Copy Path", "edit-copy-symbolic", () => {
+                if (current_folder != null) {
+                    string? p = current_folder.get_path();
+                    if (p == null) p = current_folder.get_uri();
+                    if (p != null) widget.get_clipboard().set_text(p);
+                }
             });
             var sel = get_selected_items();
             if (sel.length > 0) {
@@ -2002,12 +2224,10 @@ namespace Singularity.Apps {
                 });
                 menu.add_separator();
                 menu.add_item("Copy", "edit-copy-symbolic", () => {
-                    clipboard_file = item.file;
-                    clipboard_is_cut = false;
+                    clipboard_set_for_menu(item, false);
                 });
                 menu.add_item("Cut", "edit-cut-symbolic", () => {
-                    clipboard_file = item.file;
-                    clipboard_is_cut = true;
+                    clipboard_set_for_menu(item, true);
                     if (current_folder != null) navigate_to.begin(current_folder);
                 });
                 menu.add_separator();
@@ -2035,6 +2255,21 @@ namespace Singularity.Apps {
                     }
                 }
             }
+            // ush integration: share this folder with Linux (shown only with ush).
+            string? share_path = ush_share_target(item);
+            if (share_path != null) {
+                menu.add_separator();
+                if (ush_is_dir_trusted(share_path)) {
+                    menu.add_item("Stop sharing with Linux", "drive-harddisk-symbolic", () => {
+                        ush_set_dir_shared(share_path, false);
+                    });
+                } else {
+                    menu.add_item("Share with Linux", "drive-harddisk-symbolic", () => {
+                        ush_set_dir_shared(share_path, true);
+                    });
+                }
+            }
+
             menu.add_separator();
             menu.add_item("Properties", "document-properties-symbolic", () => {
                 show_properties(item);
@@ -2108,8 +2343,8 @@ namespace Singularity.Apps {
             lbl.add_css_class("caption");
             lbl.margin_bottom = 4;
             box.append(lbl);
-            string[] col_names = { "Size", "Type", "Modified" };
-            ColumnViewColumn[] cols = { col_size, col_type, col_modified };
+            string[] col_names = { "Author", "Size", "Type", "Modified" };
+            ColumnViewColumn[] cols = { col_author, col_size, col_type, col_modified };
             for (int i = 0; i < col_names.length; i++) {
                 var chk = new CheckButton.with_label(col_names[i]);
                 chk.active = cols[i].visible;
@@ -3238,7 +3473,7 @@ namespace Singularity.Apps {
                 var enumerator = yield folder.enumerate_children_async(
                     "standard::name,standard::type,standard::size,standard::icon," +
                     "standard::is-hidden,standard::is-symlink,standard::content-type," +
-                    "time::modified,thumbnail::path,trash::orig-path",
+                    "time::modified,thumbnail::path,trash::orig-path,owner::user",
                     FileQueryInfoFlags.NOFOLLOW_SYMLINKS, Priority.DEFAULT, null);
                 current_folder = folder;
                 string uri = folder.get_uri();
@@ -3280,6 +3515,36 @@ namespace Singularity.Apps {
                     if (!first_batch_shown && items.length >= 20) {
                         first_batch_shown = true;
                         flush_items_to_store(items, folder);
+                    }
+                }
+
+                // ush integration: in Linux files, show the folders shared with
+                // Linux at their real host path, replacing any same-named guest one.
+                string? lh = ush_linux_home();
+                if (lh != null && folder.get_path() == lh) {
+                    var shared = ush_list_shared_dirs();
+                    if (shared.length > 0) {
+                        var names = new GenericArray<string>();
+                        foreach (string sp in shared) names.add(File.new_for_path(sp).get_basename());
+                        var kept = new GenericArray<FileItem>();
+                        for (int i = 0; i < items.length; i++) {
+                            string bn = items.get(i).file.get_basename();
+                            bool shadowed = false;
+                            for (int j = 0; j < names.length; j++)
+                                if (names.get(j) == bn) { shadowed = true; break; }
+                            if (!shadowed) kept.add(items.get(i));
+                        }
+                        items = kept;
+                        foreach (string sp in shared) {
+                            var sf = File.new_for_path(sp);
+                            try {
+                                var sinfo = sf.query_info(
+                                    "standard::name,standard::type,standard::size,standard::icon," +
+                                    "standard::content-type,time::modified",
+                                    FileQueryInfoFlags.NONE, null);
+                                items.add(new FileItem(sf, sinfo));
+                            } catch (Error e) { }
+                        }
                     }
                 }
 
@@ -3545,6 +3810,16 @@ namespace Singularity.Apps {
             mark_disks_sidebar_active();
 
             add_disk_card(_disks_page_box, "File System", "/", "drive-harddisk");
+            // ush integration: Linux files as a disk.
+            string? ush_disk = ush_linux_home();
+            if (ush_disk != null) {
+                add_disk_card(_disks_page_box, "Linux files", ush_disk, "ush-penguin");
+            }
+            // dsh integration (same, dev environment)
+            string? dev_disk = ush_dev_home();
+            if (dev_disk != null) {
+                add_disk_card(_disks_page_box, "Developer files", dev_disk, "applications-engineering");
+            }
             enumerate_storage((name, icon, path, volume) => {
                 if (path != null) {
                     add_disk_card(_disks_page_box, name, path, icon);
@@ -3735,7 +4010,7 @@ namespace Singularity.Apps {
                     } catch {}
                 } else {
                     var enumerator = yield folder.enumerate_children_async(
-                        "standard::*,standard::icon,standard::is-hidden,time::modified",
+                        "standard::*,standard::icon,standard::is-hidden,time::modified,owner::user",
                         FileQueryInfoFlags.NONE, Priority.DEFAULT, null);
                     while (true) {
                         var files = yield enumerator.next_files_async(100, Priority.DEFAULT, null);

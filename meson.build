@@ -70,3 +70,11 @@ install_data('data/dev.sinty.files.json',
 install_data('data/icons/dev.sinty.files.svg',
   install_dir: get_option('datadir') / 'icons' / 'hicolor' / 'scalable' / 'apps'
 )
+
+install_data('data/icons/ush-penguin.svg',
+  install_dir: get_option('datadir') / 'icons' / 'hicolor' / 'scalable' / 'apps'
+)
+
+install_data('data/icons/ush-penguin-symbolic.svg',
+  install_dir: get_option('datadir') / 'icons' / 'hicolor' / 'scalable' / 'apps'
+)
