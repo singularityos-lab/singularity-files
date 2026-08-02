@@ -27,7 +27,9 @@ namespace Singularity.Apps {
         public bool picker_mode = false;
         public string? picker_title = null;
         public bool save_mode = false;
+        public bool directory_mode = false;
         private string? picker_current_name = null;
+        private string? picker_accept_label = null;
         public bool portal_mode = false;
         public bool multiple_mode = false;
         private Stack? view_stack_ref = null;
@@ -246,9 +248,15 @@ namespace Singularity.Apps {
                 if (args[i] == "--picker") picker_mode = true;
                 else if (args[i] == "--portal-mode") { portal_mode = true; picker_mode = true; }
                 else if (args[i] == "--save") save_mode = true;
+                else if (args[i] == "--directory") directory_mode = true;
                 else if (args[i] == "--multiple") multiple_mode = true;
                 else if (args[i].has_prefix("--title=")) picker_title = args[i].substring(8);
                 else if (args[i].has_prefix("--current-name=")) picker_current_name = args[i].substring(15);
+                else if (args[i].has_prefix("--current-folder=")) {
+                    var folder = File.new_for_commandline_arg(args[i].substring(17));
+                    if (folder.query_exists(null)) _startup_folder = folder;
+                }
+                else if (args[i].has_prefix("--accept-label=")) picker_accept_label = args[i].substring(15);
                 else if (i > 0 && !args[i].has_prefix("--")) {
                     // Positional argument: a folder to open. Accept a path or
                     // a file:// URI; relative paths resolve against the CWD
@@ -350,7 +358,7 @@ namespace Singularity.Apps {
             if (!picker_mode && !portal_mode) ensure_global_menu_name();
             string title = "Files";
             if (picker_mode) {
-                title = save_mode ? "Save File" : "Select File";
+                title = save_mode ? "Save File" : directory_mode ? "Select Folder" : "Select File";
             }
             if (picker_title != null) {
                 title = picker_title;
@@ -547,7 +555,12 @@ namespace Singularity.Apps {
             path_entry_widget.changed.connect(update_path_completions);
 
             if (picker_mode) {
-                var select_btn = new Button.with_label(save_mode ? _("Save") : _("Open"));
+                Button select_btn;
+                if (picker_accept_label != null) {
+                    select_btn = new Button.with_mnemonic(picker_accept_label);
+                } else {
+                    select_btn = new Button.with_label(save_mode ? _("Save") : directory_mode ? _("Select") : _("Open"));
+                }
                 select_btn.add_css_class("suggested-action");
                 select_btn.clicked.connect(() => submit_picker_selection());
                 window.add_bubble_widget(select_btn);
@@ -2661,9 +2674,11 @@ namespace Singularity.Apps {
                 var uris = new StringBuilder();
                 for (int i = 0; i < selected.length; i++) {
                     var item = selected.get(i);
-                    if (item.info.get_file_type() != FileType.DIRECTORY || multiple_mode) {
+                    bool is_dir = item.info.get_file_type() == FileType.DIRECTORY;
+                    if (is_dir == directory_mode) {
                         if (uris.len > 0) uris.append("\n");
                         uris.append(item.file.get_uri());
+                        if (!multiple_mode) break;
                     }
                 }
                 uri = uris.str;
@@ -2672,12 +2687,12 @@ namespace Singularity.Apps {
                 // doesn't see it - we tracked it separately on row activate).
                 bool is_dir = _picker_selected_info != null
                     && _picker_selected_info.get_file_type() == FileType.DIRECTORY;
-                if (!is_dir || multiple_mode) {
+                if (is_dir == directory_mode) {
                     uri = _picker_selected_file.get_uri();
                 }
             }
 
-            if (uri == "" && !save_mode && current_folder != null) {
+            if (uri == "" && directory_mode && current_folder != null) {
                 uri = current_folder.get_uri();
             }
 
