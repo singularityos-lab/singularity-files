@@ -44,6 +44,8 @@ namespace Singularity.Apps {
         private GridView? _grid_view = null;
         private Singularity.Widgets.Window? active_window = null;
         private GLib.FileMonitor? folder_monitor = null;
+        private uint folder_refresh_id = 0;
+        private uint navigation_generation = 0;
         private Entry? filename_entry = null;
         private Entry search_entry_widget;
         private string current_search = "";
@@ -377,6 +379,18 @@ namespace Singularity.Apps {
             }
 
             active_window = window;
+            window.close_request.connect(() => {
+                navigation_generation++;
+                if (folder_refresh_id != 0) {
+                    Source.remove(folder_refresh_id);
+                    folder_refresh_id = 0;
+                }
+                if (folder_monitor != null) {
+                    folder_monitor.cancel();
+                    folder_monitor = null;
+                }
+                return false;
+            });
             window.set_title(title);
             window.set_default_size(950, 650);
 
@@ -1458,6 +1472,11 @@ namespace Singularity.Apps {
 
         private bool on_key_pressed(uint keyval, uint keycode, Gdk.ModifierType state) {
             bool ctrl = (state & Gdk.ModifierType.CONTROL_MASK) != 0;
+
+            if (!ctrl && keyval == Gdk.Key.F5 && current_folder != null) {
+                navigate_to.begin(current_folder);
+                return true;
+            }
 
             // When a text entry is focused (e.g. the save-mode filename field),
             // let plain typing through instead of consuming it here. This
@@ -3482,6 +3501,15 @@ namespace Singularity.Apps {
         }
 
         private async void navigate_to(File folder) {
+            if (folder_refresh_id != 0) {
+                Source.remove(folder_refresh_id);
+                folder_refresh_id = 0;
+            }
+            if (folder_monitor != null) {
+                folder_monitor.cancel();
+                folder_monitor = null;
+            }
+            uint generation = ++navigation_generation;
             try {
                 // Request only the attributes we actually use; NOFOLLOW_SYMLINKS avoids
                 // extra stat() calls on each symlink target.
@@ -3490,6 +3518,7 @@ namespace Singularity.Apps {
                     "standard::is-hidden,standard::is-symlink,standard::content-type," +
                     "time::modified,thumbnail::path,trash::orig-path,owner::user",
                     FileQueryInfoFlags.NOFOLLOW_SYMLINKS, Priority.DEFAULT, null);
+                if (generation != navigation_generation) return;
                 current_folder = folder;
                 string uri = folder.get_uri();
                 // Toggle empty-trash button
@@ -3518,6 +3547,7 @@ namespace Singularity.Apps {
 
                 while (true) {
                     var files = yield enumerator.next_files_async(50, Priority.DEFAULT, null);
+                    if (generation != navigation_generation) return;
                     if (files == null || files.length() == 0) break;
 
                     foreach (var info in files) {
@@ -3632,20 +3662,28 @@ namespace Singularity.Apps {
                 update_nav_buttons();
 
                 // (Re-)start folder monitor so the view refreshes on file changes
-                if (folder_monitor != null) {
-                    folder_monitor.cancel();
-                    folder_monitor = null;
-                }
                 try {
                     folder_monitor = folder.monitor_directory(FileMonitorFlags.NONE, null);
                     folder_monitor.changed.connect((src, dest, event) => {
+                        if (generation != navigation_generation) return;
                         if (event == FileMonitorEvent.CREATED ||
                             event == FileMonitorEvent.DELETED ||
                             event == FileMonitorEvent.RENAMED ||
                             event == FileMonitorEvent.MOVED_IN ||
-                            event == FileMonitorEvent.MOVED_OUT) {
-                            if (current_folder != null)
-                                navigate_to.begin(current_folder);
+                            event == FileMonitorEvent.MOVED_OUT ||
+                            event == FileMonitorEvent.CHANGES_DONE_HINT ||
+                            event == FileMonitorEvent.ATTRIBUTE_CHANGED) {
+                            if (folder_refresh_id != 0) {
+                                Source.remove(folder_refresh_id);
+                            }
+                            folder_refresh_id = Timeout.add(100, () => {
+                                folder_refresh_id = 0;
+                                if (generation == navigation_generation &&
+                                    current_folder != null && current_folder.equal(folder)) {
+                                    navigate_to.begin(folder);
+                                }
+                                return Source.REMOVE;
+                            });
                         }
                     });
                 } catch (Error me) {
