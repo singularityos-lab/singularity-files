@@ -112,7 +112,7 @@ namespace Singularity.Apps {
          */
         private void ensure_empty_page() {
             if (view_stack_ref == null) return;
-            if (view_stack_ref.get_child_by_name("empty") != null) return;
+            if (_empty_page != null) return;
             _empty_page = new Singularity.Widgets.StatusPage();
             _empty_page.icon_name = "folder-symbolic";
             _empty_page.title = _("This folder is empty");
@@ -1296,11 +1296,20 @@ namespace Singularity.Apps {
                 show_background_context_menu(grid_widget.scroll, x, y);
             });
             stack.add_titled(grid_widget, "grid", "Grid");
-            var status_page = new Singularity.Widgets.StatusPage();
-            status_page.icon_name = "folder-open-symbolic";
-            status_page.title = _("Folder is Empty");
-            status_page.description = "There are no files in this folder.";
-            stack.add_named(status_page, "empty");
+            _empty_page = new Singularity.Widgets.StatusPage();
+            _empty_page.icon_name = "folder-open-symbolic";
+            _empty_page.title = _("Folder is Empty");
+            _empty_page.description = "There are no files in this folder.";
+            stack.add_named(_empty_page, "empty");
+
+            var empty_menu_gesture = new GestureClick();
+            empty_menu_gesture.button = 3;
+            empty_menu_gesture.pressed.connect((n, x, y) => {
+                if (current_folder != null && file_store.get_n_items() == 0) {
+                    show_background_context_menu(stack, x, y);
+                }
+            });
+            stack.add_controller(empty_menu_gesture);
 
             var network_empty = new Singularity.Widgets.StatusPage();
             network_empty.icon_name = "network-workgroup-symbolic";
