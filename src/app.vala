@@ -2865,6 +2865,7 @@ namespace Singularity.Apps {
                 gesture.set_state(EventSequenceState.CLAIMED);
             });
             btn.add_controller(gesture);
+            add_sidebar_folder_drop(btn, path);
             box.append(btn);
         }
 
@@ -3023,7 +3024,53 @@ namespace Singularity.Apps {
                     navigate_user(File.new_for_path(path));
                 }
             });
+            if (!path.contains("://")) add_sidebar_folder_drop(btn, path);
             box.append(btn);
+        }
+
+        private void add_sidebar_folder_drop(Widget widget, string destination_path) {
+            var destination = File.new_for_path(destination_path);
+            var drop = new DropTarget(typeof(Gdk.FileList),
+                Gdk.DragAction.COPY | Gdk.DragAction.MOVE);
+            unowned DropTarget drop_ref = drop;
+            drop.set_gtypes({ typeof(Gdk.FileList), typeof(GLib.File), typeof(string) });
+            drop.drop.connect((value, x, y) => {
+                var sources = new Gee.ArrayList<GLib.File>();
+                if (value.holds(typeof(Gdk.FileList))) {
+                    var files = (Gdk.FileList) value.get_boxed();
+                    foreach (unowned GLib.File file in files.get_files()) sources.add(file);
+                } else if (value.holds(typeof(GLib.File))) {
+                    var file = (GLib.File) value.get_object();
+                    if (file != null) sources.add(file);
+                } else if (value.holds(typeof(string))) {
+                    foreach (string line in value.get_string().split("\n")) {
+                        string uri = line.strip();
+                        if (uri.has_prefix("file://")) sources.add(File.new_for_uri(uri));
+                        else if (uri.has_prefix("/")) sources.add(File.new_for_path(uri));
+                    }
+                }
+                if (sources.size == 0 || destination.get_path() == null ||
+                    destination.query_file_type(FileQueryInfoFlags.NONE) != FileType.DIRECTORY)
+                    return false;
+                foreach (var source in sources) {
+                    var parent = source.get_parent();
+                    if (source.get_path() == null || source.equal(destination) ||
+                        (parent != null && parent.equal(destination))) return false;
+                }
+                bool move = false;
+                var current_drop = drop_ref.get_current_drop();
+                if (current_drop != null) {
+                    var drag = current_drop.get_drag();
+                    move = drag != null && drag.get_selected_action() == Gdk.DragAction.MOVE;
+                }
+                ensure_ops_manager();
+                var op = _ops.start_transfer(sources.to_array(), destination, move);
+                op.completed.connect(() => {
+                    if (current_folder != null) navigate_to.begin(current_folder);
+                });
+                return true;
+            });
+            widget.add_controller(drop);
         }
 
         // Highlight the sidebar button whose path is the closest ancestor of (or equal to) `folder`.
