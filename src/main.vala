@@ -19,7 +19,7 @@ namespace Singularity.Apps {
         string app_id = "dev.sinty.files";
         foreach (var arg in args) {
             if (arg == "--portal-mode") {
-                app_id = "dev.sinty.files.portal.%lld".printf(GLib.get_real_time());
+                app_id = "dev.sinty.files.portal.p%lld".printf(GLib.get_real_time());
                 break;
             }
         }
