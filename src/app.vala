@@ -315,7 +315,6 @@ namespace Singularity.Apps {
             base.startup();
 
             load_files_css();
-            setup_menu();
 
             var source = SettingsSchemaSource.get_default();
             if (source.lookup("dev.sinty.files", true) == null) {
@@ -338,6 +337,9 @@ namespace Singularity.Apps {
             if (settings == null) {
                 settings = new GLib.Settings("dev.sinty.files");
             }
+            // The menu builds actions whose initial state is read from the
+            // settings, so it cannot be assembled before they exist.
+            setup_menu();
             grid_icon_size = settings.get_int("icon-size");
             settings.changed.connect((key) => {
                 if (key == "show-hidden") {
