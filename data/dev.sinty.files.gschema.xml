@@ -36,6 +36,15 @@
       <summary>Last visited folder</summary>
       <description>URI of the last folder visited in the file manager or picker.</description>
     </key>
+    <key name="typing-in-folder" type="s">
+      <choices>
+        <choice value="search"/>
+        <choice value="select"/>
+      </choices>
+      <default>'search'</default>
+      <summary>Typing in a folder</summary>
+      <description>What typing in the file view does: search the folder, or jump to the first matching file.</description>
+    </key>
     <key name="icon-size" type="i">
       <default>48</default>
       <summary>Grid icon size</summary>

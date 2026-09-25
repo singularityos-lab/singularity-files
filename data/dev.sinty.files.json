@@ -14,6 +14,22 @@
             "widget": "switch"
         },
         {
+            "key": "typing-in-folder",
+            "label": "Typing in a Folder",
+            "type": "string",
+            "widget": "combo",
+            "options": [
+                {
+                    "id": "search",
+                    "label": "Search"
+                },
+                {
+                    "id": "select",
+                    "label": "Jump to File"
+                }
+            ]
+        },
+        {
             "key": "view-mode",
             "label": "View Mode",
             "type": "string",

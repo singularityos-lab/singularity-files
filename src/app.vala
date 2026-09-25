@@ -49,6 +49,8 @@ namespace Singularity.Apps {
         private Entry? filename_entry = null;
         private Entry search_entry_widget;
         private string current_search = "";
+        private string _type_ahead = "";
+        private uint _type_ahead_timeout = 0;
         private Popover? path_completion_popover = null;
         private ListBox? path_completion_list = null;
         private File[] nav_history = {};
@@ -1621,6 +1623,10 @@ namespace Singularity.Apps {
             // Printable character, open search mode (excludes Space which is handled below)
             if (!ctrl && path_bar_stack != null && path_bar_stack.visible_child_name == "bar" && file_view_has_focus()) {
                 unichar uc = Gdk.keyval_to_unicode(keyval);
+                if (uc > 0x20 && uc != 0x7F && settings.get_string("typing-in-folder") == "select") {
+                    type_ahead(uc);
+                    return true;
+                }
                 if (uc > 0x20 && uc != 0x7F) {
                     current_search = uc.to_string();
                     search_entry_widget.text = current_search;
@@ -1702,6 +1708,35 @@ namespace Singularity.Apps {
                 return true;
             }
             return false;
+        }
+
+        private void type_ahead(unichar uc) {
+            _type_ahead += uc.to_string();
+            if (_type_ahead_timeout != 0) Source.remove(_type_ahead_timeout);
+            _type_ahead_timeout = Timeout.add(1000, () => {
+                _type_ahead_timeout = 0;
+                _type_ahead = "";
+                return Source.REMOVE;
+            });
+            string needle = _type_ahead.casefold();
+            int prefix_match = -1;
+            int inner_match = -1;
+            for (uint i = 0; i < file_store.get_n_items(); i++) {
+                string name = ((FileItem) file_store.get_item(i)).name.casefold();
+                if (name.has_prefix(needle)) {
+                    prefix_match = (int) i;
+                    break;
+                }
+                if (inner_match < 0 && name.contains(needle)) inner_match = (int) i;
+            }
+            int match = prefix_match >= 0 ? prefix_match : inner_match;
+            if (match < 0) return;
+            var flags = ListScrollFlags.FOCUS | ListScrollFlags.SELECT;
+            if (settings.get_string("view-mode") == "grid" && _grid_view != null) {
+                _grid_view.scroll_to(match, flags, null);
+            } else {
+                file_view.scroll_to(match, null, flags, null);
+            }
         }
 
         private bool file_view_has_focus() {
@@ -2251,6 +2286,11 @@ namespace Singularity.Apps {
                                 show_open_with_menu(widget, item, mx, my);
                                 return GLib.Source.REMOVE;
                             });
+                        });
+                    }
+                    if (is_runnable(item.file)) {
+                        menu.add_item("Run as Program", "system-run-symbolic", () => {
+                            run_program(item.file);
                         });
                     }
                     if (is_image_file(item)) {
@@ -4270,6 +4310,30 @@ namespace Singularity.Apps {
                 });
             } catch (Error e) {
                  warning("Launch setup failed: %s", e.message);
+            }
+        }
+
+        private bool is_runnable(File file) {
+            if (file.get_path() == null) return false;
+            try {
+                var info = file.query_info(FileAttribute.ACCESS_CAN_EXECUTE + "," + FileAttribute.STANDARD_CONTENT_TYPE,
+                    FileQueryInfoFlags.NONE);
+                string? content_type = info.get_content_type();
+                return info.get_attribute_boolean(FileAttribute.ACCESS_CAN_EXECUTE)
+                    && content_type != null && ContentType.can_be_executable(content_type);
+            } catch (Error e) {
+                return false;
+            }
+        }
+
+        private void run_program(File file) {
+            string? path = file.get_path();
+            if (path == null) return;
+            try {
+                string[] argv = { path };
+                Process.spawn_async(file.get_parent()?.get_path(), argv, null, 0, null, null);
+            } catch (SpawnError e) {
+                warning("Run as program failed: %s", e.message);
             }
         }
 
