@@ -1,10 +1,10 @@
 [Desktop Entry]
 Name=Files
 Comment=Access and organize files
-Exec=singularity-files
+Exec=singularity-files %U
 Icon=dev.sinty.files
 Type=Application
 Categories=System;FileTools;FileManager;
-MimeType=inode/directory;
+MimeType=inode/directory;application/zip;application/x-tar;application/x-compressed-tar;application/x-bzip-compressed-tar;application/x-bzip2-compressed-tar;application/x-xz-compressed-tar;application/x-lzma-compressed-tar;application/x-zstd-compressed-tar;application/x-7z-compressed;application/vnd.rar;application/x-rar;application/x-cpio;application/gzip;application/x-bzip2;application/x-xz;application/zstd;application/x-lzip;application/x-lzma;application/vnd.ms-cab-compressed;application/x-archive;application/x-cd-image;
 StartupNotify=true
 StartupWMClass=dev.sinty.files

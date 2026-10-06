@@ -1,0 +1,12 @@
+N_("Project");
+N_("docs, src and assets folders with a README");
+N_("Photo Shoot");
+N_("Raw, Edited and Export folders");
+N_("Invoices and Receipts");
+N_("A folder for this year with one per month, 01 to 12");
+N_("Course");
+N_("Lectures, Assignments and Notes folders");
+N_("Music Project");
+N_("Songs, Demos, Recordings, Mixes, Masters, Artwork");
+N_("Website");
+N_("css, js and img folders with an index.html");

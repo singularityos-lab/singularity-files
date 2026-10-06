@@ -33,7 +33,9 @@ namespace Singularity.Apps {
         public bool portal_mode = false;
         public bool multiple_mode = false;
         private Stack? view_stack_ref = null;
-        private Singularity.Widgets.StatusPage? _empty_page = null;
+        private Singularity.Widgets.SwipeNavigation? swipe_nav = null;
+        private Box? _empty_holder = null;
+        private string _empty_key = "";
         private File? _picker_selected_file = null;
         private FileInfo? _picker_selected_info = null;
         private Stack path_bar_stack;
@@ -77,8 +79,12 @@ namespace Singularity.Apps {
         private const int      MAX_COL_VISIBLE = 3;
 
         private Button? empty_trash_btn = null;
+        private Button? share_btn = null;
         private FlowBox? _disks_page_box = null;
+        private Files.CloudView? _cloud_view = null;
         private string[] _temp_archive_dirs = {};
+        private HashTable<string, string> _archive_views = new HashTable<string, string>(str_hash, str_equal);
+        private Singularity.Widgets.Banner? _archive_banner = null;
 
         private struct Bookmark {
             public string path;
@@ -108,49 +114,119 @@ namespace Singularity.Apps {
             }
         }
 
-        /**
-         * Ensure the view_stack has an "empty" page with a centred StatusPage.
-         * Idempotent - safe to call from multiple init paths.
-         */
         private void ensure_empty_page() {
             if (view_stack_ref == null) return;
-            if (_empty_page != null) return;
-            _empty_page = new Singularity.Widgets.StatusPage();
-            _empty_page.icon_name = "folder-symbolic";
-            _empty_page.title = _("This folder is empty");
-            _empty_page.description = "Drop files here or use the menu to add new items.";
-            view_stack_ref.add_named(_empty_page, "empty");
+            if (_empty_holder != null) return;
+            _empty_holder = new Box(Orientation.VERTICAL, 0);
+            _empty_holder.hexpand = true;
+            _empty_holder.vexpand = true;
+            _empty_key = "";
+            view_stack_ref.add_named(_empty_holder, "empty");
         }
 
-        /**
-         * Pick the right StatusPage copy for the current folder (Trash, Recent,
-         * search results, …) and switch the view_stack to "empty" or back to
-         * the user's view mode.
-         */
-        private void sync_empty_state() {
+        private void show_empty_state(string kind) {
             if (view_stack_ref == null) return;
             ensure_empty_page();
+            bool writable = false;
+            bool at_home = false;
+            if (kind == "folder" && current_folder != null) {
+                at_home = current_folder.get_path() == Environment.get_home_dir();
+                try {
+                    var info = current_folder.query_info(FileAttribute.ACCESS_CAN_WRITE, FileQueryInfoFlags.NONE, null);
+                    writable = info.get_attribute_boolean(FileAttribute.ACCESS_CAN_WRITE);
+                } catch (Error e) {
+                    writable = false;
+                }
+            }
+            bool can_paste = writable && !picker_mode && clipboard_files.length > 0;
+            string key = "%s:%s:%s:%s:%s".printf(kind, writable.to_string(), at_home.to_string(),
+                can_paste.to_string(), picker_mode.to_string());
+            if (key != _empty_key) {
+                Widget? old = _empty_holder.get_first_child();
+                if (old != null) _empty_holder.remove(old);
+                _empty_holder.append(build_empty_page(kind, writable, at_home, can_paste));
+                _empty_key = key;
+            }
+            view_stack_ref.visible_child_name = "empty";
+        }
+
+        private Widget build_empty_page(string kind, bool writable, bool at_home, bool can_paste) {
+            if (kind == "search") {
+                var none = new Singularity.Widgets.StatusPage();
+                none.icon_name = "system-search";
+                none.title = _("No Matches");
+                none.description = _("Try a different search term.");
+                none.hexpand = true;
+                none.vexpand = true;
+                var clear = new Button.with_label(_("Clear Search"));
+                clear.halign = Align.CENTER;
+                clear.add_css_class("pill");
+                clear.add_css_class("suggested-action");
+                clear.clicked.connect(() => {
+                    clear_search();
+                    if (current_folder != null) navigate_to.begin(current_folder);
+                });
+                none.child = clear;
+                return none;
+            }
+            var page = new Singularity.Widgets.WelcomePage();
+            page.is_section = true;
+            page.hexpand = true;
+            page.vexpand = true;
+            if (kind == "trash") {
+                page.app_icon_name = "user-trash-empty";
+                page.title = _("Trash Is Empty");
+                page.subtitle = _("Deleted files stay here until you empty the Trash");
+                page.add_action("user-home", _("Open Home"), _("Go back to your personal folder"), () => go_to_place("home"));
+                page.add_action("document-open-recent", _("Recent Files"), _("The files you opened lately"), () => go_to_place("recent"));
+            } else if (kind == "recent") {
+                page.app_icon_name = "document-open-recent";
+                page.title = _("No Recent Files");
+                page.subtitle = _("Files you open appear here for quick access");
+                if (Environment.get_user_special_dir(UserDirectory.DOCUMENTS) != null) {
+                    page.add_action("folder-documents", _("Open Documents"), _("Browse your documents folder"), () => go_to_place("documents"));
+                }
+                if (Environment.get_user_special_dir(UserDirectory.DOWNLOAD) != null) {
+                    page.add_action("folder-download", _("Open Downloads"), _("Find the files you downloaded"), () => go_to_place("downloads"));
+                }
+                page.add_action("user-home", _("Open Home"), _("Go back to your personal folder"), () => go_to_place("home"));
+            } else {
+                page.app_icon_name = "folder";
+                page.title = _("This Folder Is Empty");
+                page.subtitle = writable ? _("Drop files here or add something new") : _("There is nothing in this folder");
+                if (writable) {
+                    page.add_action_with_caption("folder", _("New Folder"), _("Create a folder inside this one"),
+                        accelerator_get_label(Gdk.Key.n, Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK), () => show_new_folder_dialog());
+                }
+                if (can_paste) {
+                    page.add_action_with_caption("edit-paste", _("Paste"),
+                        ngettext("Put the copied item here", "Put the %u copied items here", clipboard_files.length).printf(clipboard_files.length),
+                        accelerator_get_label(Gdk.Key.v, Gdk.ModifierType.CONTROL_MASK), () => paste_files());
+                }
+                if (!picker_mode) {
+                    page.add_action("dev.sinty.leafs", _("Open Terminal Here"), _("Start a terminal in this folder"), () => launch_terminal());
+                }
+                if (!at_home) {
+                    page.add_action("user-home", _("Go Home"), _("Go back to your personal folder"), () => go_to_place("home"));
+                }
+            }
+            return page;
+        }
+
+        private void sync_empty_state() {
+            if (view_stack_ref == null) return;
             bool is_empty = file_store == null || file_store.get_n_items() == 0;
             if (is_empty && current_folder != null) {
                 string uri = current_folder.get_uri();
                 if (uri.has_prefix("trash://")) {
-                    _empty_page.icon_name = "user-trash-symbolic";
-                    _empty_page.title = _("Trash is empty");
-                    _empty_page.description = "Deleted files appear here. They are not actually removed until you empty the Trash.";
+                    show_empty_state("trash");
                 } else if (uri.has_prefix("recent://")) {
-                    _empty_page.icon_name = "document-open-recent-symbolic";
-                    _empty_page.title = _("No recent files");
-                    _empty_page.description = "Files you open will appear here for quick access.";
+                    show_empty_state("recent");
                 } else if (current_search != "") {
-                    _empty_page.icon_name = "system-search-symbolic";
-                    _empty_page.title = _("No matches");
-                    _empty_page.description = "Try a different search term, or clear the filter with Escape.";
+                    show_empty_state("search");
                 } else {
-                    _empty_page.icon_name = "folder-symbolic";
-                    _empty_page.title = _("This folder is empty");
-                    _empty_page.description = "Drop files here, paste with Ctrl+V or use the menu to add new items.";
+                    show_empty_state("folder");
                 }
-                view_stack_ref.visible_child_name = "empty";
             } else {
                 string mode = settings.get_string("view-mode");
                 view_stack_ref.visible_child_name =
@@ -170,38 +246,181 @@ namespace Singularity.Apps {
             Bus.own_name_on_connection(conn, application_id, BusNameOwnerFlags.NONE, null, null);
         }
 
+        private SimpleAction? act_open = null;
+        private SimpleAction? act_rename = null;
+        private SimpleAction? act_trash = null;
+        private SimpleAction? act_empty_trash = null;
+        private SimpleAction? act_cut = null;
+        private SimpleAction? act_copy = null;
+        private SimpleAction? act_paste = null;
+        private SimpleAction? act_back = null;
+        private SimpleAction? act_forward = null;
+        private SimpleAction? act_up = null;
+        private SimpleAction? act_share = null;
+        private SimpleAction? act_copy_link = null;
+
         private void setup_menu() {
             var menu = new GLib.Menu();
 
             var file_menu = new GLib.Menu();
-            file_menu.append("New Window", "app.new-window");
-            file_menu.append("Open Terminal", "app.open-terminal");
-            file_menu.append("Properties", "app.properties");
-            file_menu.append("Settings", "app.settings");
-            file_menu.append("Quit", "app.quit");
-            menu.append_submenu("File", file_menu);
+            var f1 = new GLib.Menu();
+            f1.append(_("New Window"), "app.new-window");
+            f1.append(_("New Folder…"), "app.new-folder");
+            file_menu.append_section(null, f1);
+            var f2 = new GLib.Menu();
+            f2.append(_("Open"), "app.open");
+            f2.append(_("Open Terminal Here"), "app.open-terminal");
+            file_menu.append_section(null, f2);
+            var f3 = new GLib.Menu();
+            f3.append(_("Rename"), "app.rename");
+            f3.append(_("Move to Trash"), "app.trash");
+            f3.append(_("Empty Trash"), "app.empty-trash");
+            file_menu.append_section(null, f3);
+            var f4 = new GLib.Menu();
+            f4.append(_("Share…"), "app.share");
+            f4.append(_("Properties"), "app.properties");
+            file_menu.append_section(null, f4);
+            var f5 = new GLib.Menu();
+            f5.append(_("Close Window"), "win.close");
+            f5.append(_("Quit"), "app.quit");
+            file_menu.append_section(null, f5);
+            menu.append_submenu(_("File"), file_menu);
+
+            var edit_menu = new GLib.Menu();
+            var e1 = new GLib.Menu();
+            e1.append(_("Cut"), "app.cut");
+            e1.append(_("Copy"), "app.copy");
+            e1.append(_("Paste"), "app.paste");
+            edit_menu.append_section(null, e1);
+            var e2 = new GLib.Menu();
+            e2.append(_("Select All"), "app.select-all");
+            e2.append(_("Find"), "app.find");
+            edit_menu.append_section(null, e2);
+            var e3 = new GLib.Menu();
+            e3.append(_("Settings"), "app.settings");
+            edit_menu.append_section(null, e3);
+            menu.append_submenu(_("Edit"), edit_menu);
 
             var view_menu = new GLib.Menu();
-            view_menu.append("Grid View", "app.view-mode('grid')");
-            view_menu.append("List View", "app.view-mode('list')");
-            view_menu.append("Column View", "app.view-mode('column')");
-            view_menu.append("Show Hidden Files", "app.show-hidden");
-            menu.append_submenu("View", view_menu);
+            var v1 = new GLib.Menu();
+            v1.append(_("Grid View"), "app.view-mode('grid')");
+            v1.append(_("List View"), "app.view-mode('list')");
+            v1.append(_("Column View"), "app.view-mode('column')");
+            view_menu.append_section(null, v1);
+            var v2 = new GLib.Menu();
+            var sort_menu = new GLib.Menu();
+            var s1 = new GLib.Menu();
+            s1.append(_("Name"), "app.sort-by('name')");
+            s1.append(_("Size"), "app.sort-by('size')");
+            s1.append(_("Type"), "app.sort-by('type')");
+            s1.append(_("Date Modified"), "app.sort-by('date')");
+            sort_menu.append_section(null, s1);
+            var s2 = new GLib.Menu();
+            s2.append(_("Reverse Order"), "app.sort-descending");
+            sort_menu.append_section(null, s2);
+            v2.append_submenu(_("Sort By"), sort_menu);
+            v2.append(_("Show Hidden Files"), "app.show-hidden");
+            view_menu.append_section(null, v2);
+            var v3 = new GLib.Menu();
+            v3.append(_("Zoom In"), "app.zoom-in");
+            v3.append(_("Zoom Out"), "app.zoom-out");
+            v3.append(_("Actual Size"), "app.zoom-reset");
+            view_menu.append_section(null, v3);
+            var v4 = new GLib.Menu();
+            v4.append(_("Reload"), "app.reload");
+            v4.append(_("Show Sidebar"), "win.toggle-sidebar");
+            view_menu.append_section(null, v4);
+            menu.append_submenu(_("View"), view_menu);
+
+            var go_menu = new GLib.Menu();
+            var g1 = new GLib.Menu();
+            g1.append(_("Back"), "app.go-back");
+            g1.append(_("Forward"), "app.go-forward");
+            g1.append(_("Enclosing Folder"), "app.go-up");
+            g1.append(_("Enter Location"), "app.location");
+            go_menu.append_section(null, g1);
+            var g2 = new GLib.Menu();
+            g2.append(_("Recent"), "app.go-to('recent')");
+            g2.append(_("Home"), "app.go-to('home')");
+            g2.append(_("Documents"), "app.go-to('documents')");
+            g2.append(_("Downloads"), "app.go-to('downloads')");
+            g2.append(_("Pictures"), "app.go-to('pictures')");
+            g2.append(_("Music"), "app.go-to('music')");
+            g2.append(_("Videos"), "app.go-to('videos')");
+            go_menu.append_section(null, g2);
+            var g3 = new GLib.Menu();
+            g3.append(_("Trash"), "app.go-to('trash')");
+            g3.append(_("Network"), "app.go-to('network')");
+            go_menu.append_section(null, g3);
+            menu.append_submenu(_("Go"), go_menu);
 
             set_menubar(menu);
+            set_accels_for_action("win.toggle-sidebar", { "F9" });
+            set_accels_for_action("win.close", { "<Control>w" });
+            set_accels_for_action("app.new-window", { "<Control>n" });
+            set_accels_for_action("app.new-folder", { "<Control><Shift>n" });
+            set_accels_for_action("app.rename", { "F2" });
+            set_accels_for_action("app.cut", { "<Control>x" });
+            set_accels_for_action("app.copy", { "<Control>c" });
+            set_accels_for_action("app.paste", { "<Control>v" });
+            set_accels_for_action("app.select-all", { "<Control>a" });
+            set_accels_for_action("app.find", { "<Control>f" });
+            set_accels_for_action("app.settings", { "<Control>comma" });
+            set_accels_for_action("app.show-hidden", { "<Control>h" });
+            set_accels_for_action("app.zoom-in", { "<Control>plus", "<Control>equal", "<Control>KP_Add" });
+            set_accels_for_action("app.zoom-out", { "<Control>minus", "<Control>KP_Subtract" });
+            set_accels_for_action("app.zoom-reset", { "<Control>0", "<Control>KP_0" });
+            set_accels_for_action("app.reload", { "F5" });
+            set_accels_for_action("app.go-back", { "<Alt>Left" });
+            set_accels_for_action("app.go-forward", { "<Alt>Right" });
+            set_accels_for_action("app.go-up", { "<Alt>Up" });
+            set_accels_for_action("app.location", { "<Control>l", "<Control>p" });
+            set_accels_for_action("app.go-to::home", { "<Alt>Home" });
 
             // Actions
             var act_new_win = new SimpleAction("new-window", null);
-            act_new_win.activate.connect(() => {
-                try {
-                    Process.spawn_command_line_async("singularity-files");
-                } catch (Error e) { warning("%s", e.message); }
-            });
+            act_new_win.activate.connect(open_new_window);
             add_action(act_new_win);
+
+            var act_new_folder = new SimpleAction("new-folder", null);
+            act_new_folder.activate.connect(() => show_new_folder_dialog());
+            add_action(act_new_folder);
+
+            act_open = new SimpleAction("open", null);
+            act_open.activate.connect(open_selected);
+            add_action(act_open);
 
             var act_term = new SimpleAction("open-terminal", null);
             act_term.activate.connect(launch_terminal);
             add_action(act_term);
+
+            act_rename = new SimpleAction("rename", null);
+            act_rename.activate.connect(() => rename_selected());
+            add_action(act_rename);
+
+            act_trash = new SimpleAction("trash", null);
+            act_trash.activate.connect(trash_selected);
+            add_action(act_trash);
+
+            act_empty_trash = new SimpleAction("empty-trash", null);
+            act_empty_trash.activate.connect(empty_trash);
+            add_action(act_empty_trash);
+
+            act_share = new SimpleAction("share", null);
+            act_share.activate.connect(() => share_files(selected_files()));
+            add_action(act_share);
+
+            act_copy_link = new SimpleAction("copy-link", null);
+            act_copy_link.activate.connect(() => copy_link_files(selected_files()));
+            add_action(act_copy_link);
+
+            var act_share_files = new SimpleAction("share-files", new GLib.VariantType("as"));
+            act_share_files.activate.connect((param) => {
+                File[] files = {};
+                foreach (string uri in param.get_strv()) files += File.new_for_uri(uri);
+                share_files(files);
+            });
+            add_action(act_share_files);
 
             var act_props = new SimpleAction("properties", null);
             act_props.activate.connect(() => show_properties(null));
@@ -213,6 +432,32 @@ namespace Singularity.Apps {
                 quit();
             });
             add_action(act_quit);
+
+            act_cut = new SimpleAction("cut", null);
+            act_cut.activate.connect(() => {
+                if (!editable_clipboard("clipboard.cut")) copy_selected(true);
+            });
+            add_action(act_cut);
+
+            act_copy = new SimpleAction("copy", null);
+            act_copy.activate.connect(() => {
+                if (!editable_clipboard("clipboard.copy")) copy_selected(false);
+            });
+            add_action(act_copy);
+
+            act_paste = new SimpleAction("paste", null);
+            act_paste.activate.connect(() => {
+                if (!editable_clipboard("clipboard.paste")) paste_files();
+            });
+            add_action(act_paste);
+
+            var act_select_all = new SimpleAction("select-all", null);
+            act_select_all.activate.connect(select_all_files);
+            add_action(act_select_all);
+
+            var act_find = new SimpleAction("find", null);
+            act_find.activate.connect(open_search);
+            add_action(act_find);
 
             var act_settings = new SimpleAction("settings", null);
             act_settings.activate.connect(() => {
@@ -236,13 +481,275 @@ namespace Singularity.Apps {
             });
             add_action(act_view);
 
-            var act_hidden = new SimpleAction.stateful("show-hidden", null, new GLib.Variant.boolean(false));
+            var act_sort = new SimpleAction.stateful("sort-by", GLib.VariantType.STRING,
+                new GLib.Variant.string(settings.get_string("sort-method")));
+            act_sort.activate.connect((param) => {
+                settings.set_string("sort-method", param.get_string());
+            });
+            settings.changed["sort-method"].connect(() => {
+                act_sort.set_state(new GLib.Variant.string(settings.get_string("sort-method")));
+            });
+            add_action(act_sort);
+
+            var act_desc = new SimpleAction.stateful("sort-descending", null,
+                new GLib.Variant.boolean(settings.get_string("sort-order") == "descending"));
+            act_desc.activate.connect(() => {
+                bool desc = settings.get_string("sort-order") == "descending";
+                settings.set_string("sort-order", desc ? "ascending" : "descending");
+            });
+            settings.changed["sort-order"].connect(() => {
+                act_desc.set_state(new GLib.Variant.boolean(settings.get_string("sort-order") == "descending"));
+            });
+            add_action(act_desc);
+
+            var act_hidden = new SimpleAction.stateful("show-hidden", null,
+                new GLib.Variant.boolean(settings.get_boolean("show-hidden")));
             act_hidden.activate.connect(() => {
-                bool current = settings.get_boolean("show-hidden");
-                settings.set_boolean("show-hidden", !current);
-                act_hidden.set_state(new GLib.Variant.boolean(!current));
+                settings.set_boolean("show-hidden", !settings.get_boolean("show-hidden"));
+            });
+            settings.changed["show-hidden"].connect(() => {
+                act_hidden.set_state(new GLib.Variant.boolean(settings.get_boolean("show-hidden")));
             });
             add_action(act_hidden);
+
+            var act_zoom_in = new SimpleAction("zoom-in", null);
+            act_zoom_in.activate.connect(() => settings.set_int("icon-size", int.min(128, settings.get_int("icon-size") + 8)));
+            add_action(act_zoom_in);
+
+            var act_zoom_out = new SimpleAction("zoom-out", null);
+            act_zoom_out.activate.connect(() => settings.set_int("icon-size", int.max(24, settings.get_int("icon-size") - 8)));
+            add_action(act_zoom_out);
+
+            var act_zoom_reset = new SimpleAction("zoom-reset", null);
+            act_zoom_reset.activate.connect(() => settings.set_int("icon-size", 48));
+            add_action(act_zoom_reset);
+
+            var act_reload = new SimpleAction("reload", null);
+            act_reload.activate.connect(() => {
+                if (current_folder != null) navigate_to.begin(current_folder);
+            });
+            add_action(act_reload);
+
+            act_back = new SimpleAction("go-back", null);
+            act_back.activate.connect(go_back);
+            add_action(act_back);
+
+            act_forward = new SimpleAction("go-forward", null);
+            act_forward.activate.connect(go_forward);
+            add_action(act_forward);
+
+            act_up = new SimpleAction("go-up", null);
+            act_up.activate.connect(go_up);
+            add_action(act_up);
+
+            var act_location = new SimpleAction("location", null);
+            act_location.activate.connect(open_location_entry);
+            add_action(act_location);
+
+            var act_go_to = new SimpleAction("go-to", GLib.VariantType.STRING);
+            act_go_to.activate.connect((param) => go_to_place(param.get_string()));
+            add_action(act_go_to);
+
+            update_menu_actions();
+        }
+
+        private void update_menu_actions() {
+            if (act_open == null) return;
+            bool in_trash = current_folder != null && current_folder.get_uri().has_prefix("trash://");
+            bool has_sel = file_view != null && get_selected_items().length > 0;
+            act_open.set_enabled(has_sel && !in_trash);
+            act_rename.set_enabled(has_sel && !in_trash);
+            act_trash.set_enabled(has_sel && !in_trash);
+            act_cut.set_enabled(has_sel && !in_trash);
+            act_copy.set_enabled(has_sel && !in_trash);
+            act_share.set_enabled(has_sel && !in_trash);
+            act_copy_link.set_enabled(has_sel && !in_trash && !selection_has_folder());
+            if (share_btn != null) share_btn.visible = has_sel && !in_trash;
+            act_paste.set_enabled(clipboard_files.length > 0 && current_folder != null && !in_trash);
+            act_empty_trash.set_enabled(in_trash);
+            act_back.set_enabled(nav_index > 0);
+            act_forward.set_enabled(nav_index < (int)nav_history.length - 1);
+            act_up.set_enabled(current_folder != null && current_folder.get_parent() != null);
+        }
+
+        private File[] selected_files() {
+            File[] files = {};
+            if (file_view == null) return files;
+            var selected = get_selected_items();
+            for (int i = 0; i < selected.length; i++) files += selected.get(i).file;
+            return files;
+        }
+
+        private bool selection_has_folder() {
+            var selected = get_selected_items();
+            for (int i = 0; i < selected.length; i++)
+                if (selected.get(i).is_folder) return true;
+            return false;
+        }
+
+        private File[] menu_target_files(FileItem item) {
+            var selected = get_selected_items();
+            for (int i = 0; i < selected.length; i++) {
+                if (selected.get(i).file.equal(item.file)) return selected_files();
+            }
+            return { item.file };
+        }
+
+        private bool menu_targets_folder(FileItem item) {
+            var selected = get_selected_items();
+            bool in_selection = false;
+            for (int i = 0; i < selected.length; i++)
+                if (selected.get(i).file.equal(item.file)) in_selection = true;
+            return in_selection ? selection_has_folder() : item.is_folder;
+        }
+
+        private void share_files(File[] files) {
+            if (files.length == 0) return;
+            Gtk.Window? parent = active_window != null && active_window.get_mapped() ? active_window : null;
+            Singularity.Share.present(parent, new Singularity.ShareContent.for_files(files), this);
+        }
+
+        private void copy_link_files(File[] files) {
+            if (files.length == 0 || active_window == null) return;
+            Singularity.Share.copy_link(active_window, files);
+        }
+
+        private void open_new_window() {
+            try {
+                string? path = current_folder?.get_path();
+                if (path != null) {
+                    Process.spawn_command_line_async("singularity-files " + GLib.Shell.quote(path));
+                } else {
+                    Process.spawn_command_line_async("singularity-files");
+                }
+            } catch (Error e) { warning("new window: %s", e.message); }
+        }
+
+        private void open_selected() {
+            var selected = get_selected_items();
+            for (int i = 0; i < selected.length; i++) {
+                var item = selected.get(i);
+                if (item.is_folder) {
+                    navigate_user(item.file);
+                    return;
+                }
+                launch_file(item.file);
+            }
+        }
+
+        private bool rename_selected() {
+            var col_fi = _column_selected_item();
+            if (col_fi != null) {
+                start_inline_rename(col_fi);
+                return true;
+            }
+            var selected = get_selected_items();
+            if (selected.length > 0) {
+                start_inline_rename(selected.get(0));
+                return true;
+            }
+            return false;
+        }
+
+        private void trash_selected() {
+            var selected = get_selected_items();
+            if (selected.length == 0) return;
+            GLib.File[] picked = {};
+            for (int i = 0; i < selected.length; i++) picked += selected.get(i).file;
+            if (Files.CloudMountActions.covers(picked)) {
+                Files.CloudMountActions.confirm_delete(active_window, picked, () => {
+                    if (current_folder != null) navigate_to.begin(current_folder);
+                });
+                return;
+            }
+            ensure_ops_manager();
+            var files = new GLib.File[selected.length];
+            for (int i = 0; i < selected.length; i++)
+                files[i] = selected.get(i).file;
+            var op = _ops.start_trash(files);
+            op.completed.connect(() => {
+                if (current_folder != null) navigate_to.begin(current_folder);
+            });
+        }
+
+        private void empty_trash() {
+            try {
+                var trash = File.new_for_uri("trash://");
+                var e = trash.enumerate_children("standard::*", FileQueryInfoFlags.NONE, null);
+                FileInfo? fi;
+                while ((fi = e.next_file(null)) != null) {
+                    var child = trash.get_child(fi.get_name());
+                    child.delete(null);
+                }
+                navigate_to.begin(File.new_for_uri("trash://"));
+            } catch (Error e) {
+                warning("Empty trash failed: %s", e.message);
+            }
+        }
+
+        private void copy_selected(bool cut) {
+            var selected = get_selected_items();
+            if (selected.length == 0) return;
+            bool was_cut = clipboard_is_cut;
+            set_clipboard(selected, cut);
+            if ((cut || was_cut) && current_folder != null) navigate_to.begin(current_folder);
+        }
+
+        private bool editable_clipboard(string action) {
+            var win = get_active_window();
+            var focus = win != null ? win.get_focus() : null;
+            if (!(focus is Editable)) return false;
+            if (action == "select-all") ((Editable) focus).select_region(0, -1);
+            else focus.activate_action(action, null);
+            return true;
+        }
+
+        private void select_all_files() {
+            if (editable_clipboard("select-all")) return;
+            var sel = file_view.model as SelectionModel;
+            if (sel != null) sel.select_all();
+        }
+
+        private void open_search() {
+            if (path_bar_stack == null || picker_mode) return;
+            if (path_bar_stack.visible_child_name != "search") {
+                current_search = "";
+                search_entry_widget.text = "";
+                path_bar_stack.visible_child_name = "search";
+            }
+            search_entry_widget.grab_focus();
+        }
+
+        private void open_location_entry() {
+            if (path_bar_stack == null || path_bar_stack.visible_child_name == "entry") return;
+            if (current_folder != null) {
+                path_entry_widget.text = current_folder.get_path() ?? "";
+            }
+            path_bar_stack.visible_child_name = "entry";
+            path_entry_widget.grab_focus();
+            path_entry_widget.set_position(-1);
+        }
+
+        private void go_to_place(string place) {
+            string? path = null;
+            switch (place) {
+                case "recent": path = "recent://"; break;
+                case "home": path = Environment.get_home_dir(); break;
+                case "documents": path = Environment.get_user_special_dir(UserDirectory.DOCUMENTS); break;
+                case "downloads": path = Environment.get_user_special_dir(UserDirectory.DOWNLOAD); break;
+                case "pictures": path = Environment.get_user_special_dir(UserDirectory.PICTURES); break;
+                case "music": path = Environment.get_user_special_dir(UserDirectory.MUSIC); break;
+                case "videos": path = Environment.get_user_special_dir(UserDirectory.VIDEOS); break;
+                case "trash": path = "trash://"; break;
+                case "network": path = "smb://"; break;
+            }
+            if (path == null) return;
+            if (path.contains("://")) {
+                clear_search();
+                navigate_to_uri(path);
+            } else {
+                navigate_user(File.new_for_path(path));
+            }
         }
 
         public override int command_line(ApplicationCommandLine command_line) {
@@ -269,7 +776,13 @@ namespace Singularity.Apps {
                         ? GLib.File.new_for_uri(args[i])
                         : GLib.File.new_for_commandline_arg_and_cwd(
                               args[i], command_line.get_cwd());
-                    if (f.query_exists(null)) _startup_folder = f;
+                    if (!f.query_exists(null)) continue;
+                    if (f.query_file_type(FileQueryInfoFlags.NONE, null) == FileType.DIRECTORY) {
+                        _startup_folder = f;
+                    } else {
+                        _startup_folder = f.get_parent();
+                        _startup_archive = is_archive_location(f) ? f : null;
+                    }
                 }
             }
             activate();
@@ -278,6 +791,28 @@ namespace Singularity.Apps {
 
         // Folder to open on launch, set from a positional command-line arg.
         private GLib.File? _startup_folder = null;
+        private GLib.File? _startup_archive = null;
+
+        private static bool is_archive_location(GLib.File f) {
+            try {
+                var info = f.query_info(FileAttribute.STANDARD_CONTENT_TYPE, FileQueryInfoFlags.NONE);
+                if (Files.Archives.ArchiveFormats.is_archive_type(info.get_content_type())) return true;
+            } catch (Error e) {
+            }
+            return Files.Archives.ArchiveFormats.is_archive_name(f.get_basename());
+        }
+
+        private void open_startup_archive() {
+            var f = _startup_archive;
+            _startup_archive = null;
+            if (f == null) return;
+            try {
+                var info = f.query_info("standard::*,time::modified", FileQueryInfoFlags.NONE);
+                open_archive_as_folder(new FileItem(f, info));
+            } catch (Error e) {
+                show_archive_error(f.get_basename(), e.message);
+            }
+        }
 
         private const string FILES_CSS = """
 .files-ops-banner {
@@ -301,6 +836,53 @@ namespace Singularity.Apps {
     background-color: @accent_bg_color;
     background-image: none;
 }
+
+.files-conflict-card {
+    padding: 12px;
+    border-radius: 14px;
+    background-color: alpha(@window_fg_color, 0.05);
+}
+
+.files-conflict-preview {
+    border-radius: 10px;
+    background-color: alpha(@window_fg_color, 0.04);
+}
+
+.files-conflict-badge {
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: bold;
+    background-color: alpha(@accent_bg_color, 0.18);
+    color: @accent_color;
+}
+
+.files-cloud-line > .singularity-sidebar-row {
+    padding-right: 4px;
+}
+
+.files-cloud-eject {
+    padding: 4px;
+    min-width: 24px;
+    min-height: 24px;
+    border-radius: 8px;
+}
+
+.files-template-card {
+    border-radius: 12px;
+    padding: 0;
+}
+.files-template-body {
+    border-radius: 12px;
+    padding: 12px 4px 10px 4px;
+}
+.files-template-card:checked > .files-template-body {
+    background-color: alpha(@accent_color, 0.14);
+    box-shadow: inset 0 0 0 2px @accent_color;
+}
+.files-template-card:checked label {
+    color: @text_color;
+}
 """;
 
         private void load_files_css() {
@@ -313,10 +895,16 @@ namespace Singularity.Apps {
                     Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
         }
 
+        protected override void shutdown() {
+            _cleanup_temp_archive_dirs();
+            base.shutdown();
+        }
+
         protected override void startup() {
             base.startup();
 
             load_files_css();
+            Files.Archives.ArchivePaths.remove_tree(archive_cache_root());
 
             var source = SettingsSchemaSource.get_default();
             if (source.lookup("dev.sinty.files", true) == null) {
@@ -397,36 +985,19 @@ namespace Singularity.Apps {
             });
             window.set_title(title);
             window.set_default_size(950, 650);
+            var act_close = new SimpleAction("close", null);
+            act_close.activate.connect(() => window.close());
+            window.add_action(act_close);
 
             // Empty handler: the real one is wired later with settings persistence.
-            var sidebar_btn = window.add_bubble_icon("sidebar-show-symbolic", "Toggle Sidebar", () => {});
+            var sidebar_btn = window.add_bubble_icon("sidebar-show-symbolic", _("Toggle Sidebar (F9)"), () => {});
             sidebar_btn.visible = !picker_mode;
             // Back/Forward navigation buttons (non-picker only)
             if (!picker_mode) {
-                back_btn = new Button.from_icon_name("go-previous-symbolic");
-                back_btn.add_css_class("flat");
+                back_btn = window.add_bubble_icon("go-previous-symbolic", _("Back"), () => go_back());
                 back_btn.visible = false;
-                back_btn.tooltip_text = _("Back");
-                back_btn.clicked.connect(() => {
-                    if (nav_index > 0) {
-                        nav_index--;
-                        update_nav_buttons();
-                        navigate_to.begin(nav_history[nav_index]);
-                    }
-                });
-                window.add_bubble_widget(back_btn);
-                fwd_btn = new Button.from_icon_name("go-next-symbolic");
-                fwd_btn.add_css_class("flat");
+                fwd_btn = window.add_bubble_icon("go-next-symbolic", _("Forward"), () => go_forward());
                 fwd_btn.visible = false;
-                fwd_btn.tooltip_text = _("Forward");
-                fwd_btn.clicked.connect(() => {
-                    if (nav_index < (int)nav_history.length - 1) {
-                        nav_index++;
-                        update_nav_buttons();
-                        navigate_to.begin(nav_history[nav_index]);
-                    }
-                });
-                window.add_bubble_widget(fwd_btn);
             }
             if (picker_mode) {
                 var cancel_btn = new Button.with_label(_("Cancel"));
@@ -608,7 +1179,10 @@ namespace Singularity.Apps {
                 files_win.files_ui_root.remove(content_scroll);
                 files_win.files_ui_root.remove(sidebar);
                 setup_file_view(content_scroll);
-                window.set_content(build_content_with_ops_banner(content_scroll));
+                swipe_nav = new Singularity.Widgets.SwipeNavigation(build_content_with_ops_banner(content_scroll));
+                swipe_nav.back.connect(go_back);
+                swipe_nav.forward.connect(go_forward);
+                window.set_content(swipe_nav);
                 var places_box = files_win.places_box;
                 add_place_button(places_box, "Recent", "recent://", "document-open-recent-symbolic");
                 places_box.append(new Separator(Orientation.HORIZONTAL));
@@ -646,6 +1220,25 @@ namespace Singularity.Apps {
                 places_box.append(_devices_section);
                 rebuild_devices_section();
 
+                _cloud_view = new Files.CloudView(window, view_stack_ref, path_bar, settings);
+                _cloud_view.open_file.connect(launch_file);
+                _cloud_view.locations.mount_activated.connect((path) => {
+                    clear_search();
+                    navigate_user(File.new_for_path(path));
+                });
+                Singularity.Accounts.CloudMounts.get_default().changed.connect(() => rebuild_bookmarks_section());
+                _cloud_view.activated.connect(() => {
+                    clear_search();
+                    current_folder = null;
+                    ((SelectionModel) file_view.model).unselect_all();
+                    update_menu_actions();
+                    if (empty_trash_btn != null) empty_trash_btn.visible = false;
+                    if (_file_count_lbl != null) _file_count_lbl.label = "";
+                    mark_disks_sidebar_active();
+                    if (_disks_sidebar_btn != null) _disks_sidebar_btn.remove_css_class("sidebar-nav-active");
+                });
+                places_box.append(_cloud_view.sidebar_section);
+
                 // Watch bookmarks file for changes
                 setup_bookmarks_file_monitor();
 
@@ -677,11 +1270,14 @@ namespace Singularity.Apps {
                 window.set_sidebar(sidebar);
                 bool show_sidebar = settings.get_boolean("show-sidebar");
                 window.set_sidebar_visible(show_sidebar);
-                sidebar_btn.clicked.connect(() => {
+                var act_sidebar = new SimpleAction("toggle-sidebar", null);
+                act_sidebar.activate.connect(() => {
                     bool new_state = !window.get_sidebar_visible();
                     window.set_sidebar_visible(new_state);
                     settings.set_boolean("show-sidebar", new_state);
                 });
+                window.add_action(act_sidebar);
+                sidebar_btn.action_name = "win.toggle-sidebar";
 
                 // Store stack ref
                 var stack_in_content = content_scroll.get_child() as Stack;
@@ -775,26 +1371,22 @@ namespace Singularity.Apps {
                     zoom_in_btn.visible = g;
                 });
 
+                var sb = new Button.from_icon_name("singularity-share-symbolic");
+                sb.has_frame = false;
+                sb.add_css_class("toolbar-button");
+                sb.tooltip_text = _("Share");
+                sb.action_name = "app.share";
+                sb.visible = false;
+                window.add_bubble_widget(sb);
+                share_btn = sb;
+
                 // Empty Trash button - shown only when in trash://
                 var etb = new Button.from_icon_name("user-trash-full-symbolic");
                 etb.has_frame = false;
                 etb.add_css_class("toolbar-button");
                 etb.tooltip_text = _("Empty Trash");
                 etb.visible = false;
-                etb.clicked.connect(() => {
-                    try {
-                        var trash = File.new_for_uri("trash://");
-                        var e = trash.enumerate_children("standard::*", FileQueryInfoFlags.NONE, null);
-                        FileInfo? fi;
-                        while ((fi = e.next_file(null)) != null) {
-                            var child = trash.get_child(fi.get_name());
-                            child.delete(null);
-                        }
-                        navigate_to.begin(File.new_for_uri("trash://"));
-                    } catch (Error e) {
-                        warning("Empty trash failed: %s", e.message);
-                    }
-                });
+                etb.clicked.connect(empty_trash);
                 window.add_bubble_widget(etb);
                 empty_trash_btn = etb;
 
@@ -831,6 +1423,7 @@ namespace Singularity.Apps {
                 }
             }
             navigate_user(start_folder);
+            if (!picker_mode) open_startup_archive();
 
             // Filename entry at bottom for save mode
             if (picker_mode && save_mode) {
@@ -886,6 +1479,7 @@ namespace Singularity.Apps {
             // Always use MultiSelection so Ctrl+Click, Shift+Click and Ctrl+A work.
             // Picker mode (single-file) still works: the submit button reads whatever's selected.
             SelectionModel selection = new MultiSelection(file_store);
+            selection.selection_changed.connect(() => update_menu_actions());
             var stack = new Stack();
             stack.transition_type = StackTransitionType.CROSSFADE;
             var list_widget = new Singularity.Widgets.DataListView();
@@ -902,14 +1496,6 @@ namespace Singularity.Apps {
                 box.append(img);
                 box.append(label);
                 box.set_data<Image>("thumb-img", img);
-                // Right-click context menu for list view
-                var gesture = new GestureClick();
-                gesture.button = 3;
-                gesture.pressed.connect((n, x, y) => {
-                    var fi = box.get_data<FileItem>("file-item");
-                    if (fi != null) show_context_menu(box, fi, x, y);
-                });
-                box.add_controller(gesture);
                 // Drag and drop source for list view
                 var drag_src = new DragSource();
                 drag_src.actions = Gdk.DragAction.COPY | Gdk.DragAction.MOVE;
@@ -924,6 +1510,7 @@ namespace Singularity.Apps {
                     return new Gdk.ContentProvider.union({ files_prov, uri_prov, plain_prov });
                 });
                 box.add_controller(drag_src);
+                Singularity.Animation.DragLift.attach(drag_src, box);
                 list_item.set_child(box);
             });
             factory_name.bind.connect((item) => {
@@ -935,25 +1522,7 @@ namespace Singularity.Apps {
                 // Store file item for right-click gesture lookup
                 box.set_data<FileItem>("file-item", file_item);
                 label.label = file_item.name;
-                bool show_previews = settings.get_boolean("show-previews");
-                string? thumb_path = file_item.info.get_attribute_byte_string("thumbnail::path");
-                string? content_type = file_item.info.get_content_type();
-                if (show_previews && thumb_path != null) {
-                    img.set_data<string>("thumb-for-path", "");
-                    img.set_from_file(thumb_path);
-                } else if (show_previews && content_type != null && content_type.has_prefix("image/")) {
-                    img.set_from_gicon(file_item.info.get_icon());
-                    string? fpath = file_item.file.get_path();
-                    if (fpath != null) {
-                        img.set_data<string>("thumb-for-path", fpath);
-                        load_thumbnail_async(img, null, fpath, 24);
-                    }
-                } else {
-                    img.set_from_gicon(file_item.info.get_icon());
-                    if (!apply_plugin_icon(img, file_item, 24)) {
-                        img.set_data<string>("thumb-for-path", "");
-                    }
-                }
+                bind_thumbnail(img, null, file_item, 24, true);
                 // Cut visual feedback
                 bool is_cut = clipboard_is_cut && clipboard_has(file_item.file);
                 if (is_cut) box.add_css_class("cut"); else box.remove_css_class("cut");
@@ -1010,7 +1579,8 @@ namespace Singularity.Apps {
                 var list_item = (ListItem)item;
                 var label = (Label)list_item.get_child();
                 var file_item = (FileItem)list_item.get_item();
-                if (file_item.info.get_file_type() == FileType.DIRECTORY) {
+                if (file_item.info.get_file_type() == FileType.DIRECTORY
+                        || !file_item.info.has_attribute(FileAttribute.STANDARD_SIZE)) {
                     label.label = "--";
                 } else {
                     label.label = format_size(file_item.info.get_size());
@@ -1118,6 +1688,17 @@ namespace Singularity.Apps {
                 if (y < 36) show_column_menu(file_view, x, y);
             });
             file_view.add_controller(header_gesture);
+            var row_menu_gesture = new GestureClick();
+            row_menu_gesture.button = 3;
+            row_menu_gesture.set_propagation_phase(PropagationPhase.CAPTURE);
+            row_menu_gesture.pressed.connect((n, x, y) => {
+                var fi = list_item_at(x, y);
+                if (fi == null) return;
+                row_menu_gesture.set_state(EventSequenceState.CLAIMED);
+                select_for_menu(fi);
+                show_context_menu(file_view, fi, x, y);
+            });
+            file_view.add_controller(row_menu_gesture);
             list_widget.row_activated.connect((pos) => {
                 on_item_activated(pos);
             });
@@ -1204,13 +1785,8 @@ namespace Singularity.Apps {
                     var plain_prov = new Gdk.ContentProvider.for_bytes("text/plain",    new GLib.Bytes(uri.data));
                     return new Gdk.ContentProvider.union({ files_prov, uri_prov, plain_prov });
                 });
-                drag_src.drag_begin.connect((drag) => {
-                    var img_ref = box.get_data<Image>("thumb-img");
-                    if (img_ref != null && img_ref.paintable != null) {
-                        drag_src.set_icon(img_ref.paintable, 24, 24);
-                    }
-                });
                 box.add_controller(drag_src);
+                Singularity.Animation.DragLift.attach(drag_src, box);
                 list_item.set_child(box);
             });
             grid_factory.bind.connect((item) => {
@@ -1230,30 +1806,7 @@ namespace Singularity.Apps {
                 // Reset spinner state on every rebind (widget recycling)
                 spinner.spinning = false;
                 spinner.visible = false;
-                bool show_previews = settings.get_boolean("show-previews");
-                string? thumb_path = file_item.info.get_attribute_byte_string("thumbnail::path");
-                string? content_type = file_item.info.get_content_type();
-                if (show_previews && thumb_path != null) {
-                    img.set_data<string>("thumb-for-path", "");
-                    img.set_from_file(thumb_path);
-                } else if (show_previews && content_type != null && content_type.has_prefix("image/")) {
-                    img.set_from_icon_name("image-loading-symbolic");
-                    spinner.spinning = true;
-                    spinner.visible = true;
-                    string? fpath = file_item.file.get_path();
-                    if (fpath != null) {
-                        img.set_data<string>("thumb-for-path", fpath);
-                        load_thumbnail_async(img, spinner, fpath, 64);
-                    } else {
-                        spinner.spinning = false;
-                        spinner.visible = false;
-                    }
-                } else {
-                    img.set_from_gicon(file_item.info.get_icon());
-                    if (!apply_plugin_icon(img, file_item, grid_icon_size)) {
-                        img.set_data<string>("thumb-for-path", "");
-                    }
-                }
+                bind_thumbnail(img, spinner, file_item, grid_icon_size, false);
                 // Cut visual feedback
                 bool is_cut = clipboard_is_cut && clipboard_has(file_item.file);
                 cut_badge.visible = is_cut;
@@ -1300,11 +1853,11 @@ namespace Singularity.Apps {
                 show_background_context_menu(grid_widget.scroll, x, y);
             });
             stack.add_titled(grid_widget, "grid", "Grid");
-            _empty_page = new Singularity.Widgets.StatusPage();
-            _empty_page.icon_name = "folder-open-symbolic";
-            _empty_page.title = _("Folder is Empty");
-            _empty_page.description = "There are no files in this folder.";
-            stack.add_named(_empty_page, "empty");
+            _empty_holder = new Box(Orientation.VERTICAL, 0);
+            _empty_holder.hexpand = true;
+            _empty_holder.vexpand = true;
+            _empty_key = "";
+            stack.add_named(_empty_holder, "empty");
 
             var empty_menu_gesture = new GestureClick();
             empty_menu_gesture.button = 3;
@@ -1318,7 +1871,7 @@ namespace Singularity.Apps {
             var network_empty = new Singularity.Widgets.StatusPage();
             network_empty.icon_name = "network-workgroup-symbolic";
             network_empty.title = _("No Network Shares Found");
-            network_empty.description = "No Samba/SMB shares were discovered on the local network.\nUse \"New Connection\" at the top of this page to connect to a specific address.";
+            network_empty.description = "No Samba/SMB shares were discovered on the local network.\nUse \"Connect to Server\" at the top of this page to connect to a specific address.";
             stack.add_named(network_empty, "network-empty");
 
             _col_browser = new Singularity.Widgets.ColumnBrowser();
@@ -1369,6 +1922,7 @@ namespace Singularity.Apps {
         [DBus (name = "dev.sinty.shell.Preview")]
         private interface PreviewService : Object {
             public abstract void show_preview (string uri) throws Error;
+            public abstract void show_previews (string[] uris, int index, string origin) throws Error;
             public abstract void close_preview () throws Error;
         }
 
@@ -1484,6 +2038,7 @@ namespace Singularity.Apps {
         }
 
         private bool on_key_pressed(uint keyval, uint keycode, Gdk.ModifierType state) {
+            if (_cloud_view != null && _cloud_view.active) return false;
             bool ctrl = (state & Gdk.ModifierType.CONTROL_MASK) != 0;
 
             if (!ctrl && keyval == Gdk.Key.F5 && current_folder != null) {
@@ -1534,47 +2089,31 @@ namespace Singularity.Apps {
             if (!picker_mode && keyval == Gdk.Key.Escape && clipboard_is_cut) {
                 clipboard_is_cut = false;
                 clipboard_files = new GLib.GenericArray<File>();
+                update_menu_actions();
                 if (current_folder != null) navigate_to.begin(current_folder);
                 return true;
             }
 
             // Ctrl+P opens the path-entry palette (same effect as "/").
             if (ctrl && keyval == Gdk.Key.p) {
-                if (path_bar_stack != null && path_bar_stack.visible_child_name != "entry") {
-                    if (current_folder != null) {
-                        path_entry_widget.text = current_folder.get_path() ?? "";
-                    }
-                    path_bar_stack.visible_child_name = "entry";
-                    path_entry_widget.grab_focus();
-                    path_entry_widget.set_position(-1);
-                }
+                open_location_entry();
                 return true;
             }
 
             // Ctrl+A - select all
             if (ctrl && keyval == Gdk.Key.a) {
-                var sel = file_view.model as SelectionModel;
-                if (sel != null) sel.select_all();
+                select_all_files();
                 return true;
             }
 
             // Ctrl+C - copy selected file to clipboard
             if (ctrl && keyval == Gdk.Key.c) {
-                var selected = get_selected_items();
-                if (selected.length > 0) {
-                    bool was_cut = clipboard_is_cut;
-                    set_clipboard(selected, false);
-                    if (was_cut && current_folder != null) navigate_to.begin(current_folder);
-                }
+                copy_selected(false);
                 return true;
             }
             // Ctrl+X / Ctrl+K - cut selected file
             if (ctrl && (keyval == Gdk.Key.x || keyval == Gdk.Key.k)) {
-                var selected = get_selected_items();
-                if (selected.length > 0) {
-                    set_clipboard(selected, true);
-                    if (current_folder != null) navigate_to.begin(current_folder);
-                }
+                copy_selected(true);
                 return true;
             }
             // Ctrl+V - paste
@@ -1584,17 +2123,7 @@ namespace Singularity.Apps {
             }
             // Delete / KP_Delete - move selected file to trash (async via ops manager)
             if (!ctrl && (keyval == Gdk.Key.Delete || keyval == Gdk.Key.KP_Delete)) {
-                var selected = get_selected_items();
-                if (selected.length > 0) {
-                    ensure_ops_manager();
-                    var files = new GLib.File[selected.length];
-                    for (int i = 0; i < selected.length; i++)
-                        files[i] = selected.get(i).file;
-                    var op = _ops.start_trash(files);
-                    op.completed.connect(() => {
-                        if (current_folder != null) navigate_to.begin(current_folder);
-                    });
-                }
+                trash_selected();
                 return true;
             }
             // "/" - focus path entry
@@ -1639,14 +2168,7 @@ namespace Singularity.Apps {
             }
             // Ctrl+N - new window (spawn separate process to avoid shared state)
             if (ctrl && (state & Gdk.ModifierType.SHIFT_MASK) == 0 && keyval == Gdk.Key.n) {
-                try {
-                    string? path = current_folder?.get_path();
-                    if (path != null) {
-                        Process.spawn_command_line_async("singularity-files " + GLib.Shell.quote(path));
-                    } else {
-                        Process.spawn_command_line_async("singularity-files");
-                    }
-                } catch (Error e) { warning("new window: %s", e.message); }
+                open_new_window();
                 return true;
             }
             // Ctrl+Shift+N - new folder
@@ -1657,16 +2179,7 @@ namespace Singularity.Apps {
             // F2 renames the selected row. Column mode tracks selection per pane
             // (separate from file_view's model), so check there first.
             if (!ctrl && keyval == Gdk.Key.F2) {
-                var col_fi = _column_selected_item();
-                if (col_fi != null) {
-                    start_inline_rename(col_fi);
-                    return true;
-                }
-                var selected = get_selected_items();
-                if (selected.length > 0) {
-                    start_inline_rename(selected.get(0));
-                    return true;
-                }
+                if (rename_selected()) return true;
             }
             // Space - quick preview (independent of show-previews thumbnail setting)
             if (!ctrl && keyval == Gdk.Key.space) {
@@ -1778,6 +2291,7 @@ namespace Singularity.Apps {
             for (int i = 0; i < items.length; i++)
                 clipboard_files.add(items.get(i).file);
             clipboard_is_cut = cut;
+            update_menu_actions();
         }
 
         private void clipboard_set_for_menu(FileItem item, bool cut) {
@@ -1792,6 +2306,7 @@ namespace Singularity.Apps {
                 clipboard_files.add(item.file);
                 clipboard_is_cut = cut;
             }
+            update_menu_actions();
         }
 
         private void paste_files() {
@@ -1804,6 +2319,7 @@ namespace Singularity.Apps {
             if (was_cut) {
                 clipboard_files = new GLib.GenericArray<File>();
                 clipboard_is_cut = false;
+                update_menu_actions();
             }
             op.completed.connect(() => {
                 if (current_folder != null) navigate_to.begin(current_folder);
@@ -1815,6 +2331,14 @@ namespace Singularity.Apps {
             if (_ops == null) {
                 _ops = new Files.FileOpsManager();
                 _ops.state_changed.connect(() => update_ops_banner());
+                _ops.conflict.connect((request) => {
+                    new Files.ConflictDialog(this, request, _ops.active_count()).present();
+                });
+                _ops.password_needed.connect((request) => {
+                    var dlg = new Files.Archives.ArchivePasswordDialog(this, active_window, request.archive_name, request.retry);
+                    dlg.answered.connect((pw) => request.answer(pw));
+                    dlg.open_dialog();
+                });
             }
         }
 
@@ -1825,6 +2349,15 @@ namespace Singularity.Apps {
             var outer = new Gtk.Box(Orientation.VERTICAL, 0);
             content.hexpand = true;
             content.vexpand = true;
+
+            _archive_banner = new Singularity.Widgets.Banner("", Singularity.Widgets.BannerStyle.INFO);
+            _archive_banner.icon_name = "package-x-generic-symbolic";
+            _archive_banner.button_label = _("Extract…");
+            _archive_banner.button_clicked.connect(() => extract_current_archive());
+            _archive_banner.visible = false;
+            _archive_banner.margin_start = 12;
+            _archive_banner.margin_end = 12;
+            _archive_banner.margin_bottom = 6;
 
             // The file-count label snaps to the opposite corner on hover
             // so the pointer never covers it.
@@ -1854,6 +2387,7 @@ namespace Singularity.Apps {
             count_overlay.add_controller(motion);
 
             outer.append(count_overlay);
+            outer.append(_archive_banner);
 
             _ops_banner = new Gtk.Revealer();
             _ops_banner.transition_type = Gtk.RevealerTransitionType.SLIDE_UP;
@@ -1916,12 +2450,18 @@ namespace Singularity.Apps {
 
             string label_text;
             if (active == 0 && has_recent_finished) {
-                label_text = "Done";
+                int skipped = 0;
+                foreach (var o in _ops.ops) skipped += o.skipped;
+                label_text = skipped > 0
+                    ? _("Done, %s").printf(ngettext("%d item skipped", "%d items skipped", skipped).printf(skipped))
+                    : "Done";
             } else if (_ops.ops.size == 1) {
                 var op = _ops.ops[0];
                 label_text = op.errored
                     ? "Failed: " + (op.error_message ?? "")
-                    : op.display_name;
+                    : (op.waiting ? _("%s, waiting for your choice").printf(op.display_name) : op.display_name);
+                if (op.finished && op.skipped > 0)
+                    label_text += ", " + ngettext("%d item skipped", "%d items skipped", op.skipped).printf(op.skipped);
             } else {
                 label_text = "%d file operations".printf(active);
             }
@@ -1932,9 +2472,10 @@ namespace Singularity.Apps {
             var menu = new Singularity.Widgets.ContextMenu(widget);
             Gdk.Rectangle rect = { (int)mx, (int)my, 1, 1 };
             menu.set_pointing_to(rect);
-            menu.add_item("New Folder", "folder-new-symbolic", () => {
+            menu.add_item(_("New Folder…"), "folder-new-symbolic", () => {
                 show_new_folder_dialog();
             });
+            append_new_document_menu(menu);
             if (clipboard_files.length > 0) {
                 menu.add_separator();
                 menu.add_item("Paste", "edit-paste-symbolic", () => {
@@ -1959,84 +2500,124 @@ namespace Singularity.Apps {
                     compress_selected_files(widget);
                 });
             }
+            release_on_close(menu);
             menu.popup();
         }
 
         private void show_new_folder_dialog() {
             if (current_folder == null) return;
-            var dialog = new Singularity.Widgets.AppDialog((Gtk.Application)this, false);
-            dialog.title = _("New Folder");
-            dialog.transient_for = (Gtk.Window)file_view.get_root();
-            dialog.set_default_size(360, 160);
+            var folder = current_folder;
+            var dialog = new Files.NewFolderDialog((Gtk.Application) this, (Gtk.Window) file_view.get_root(), folder);
+            dialog.created.connect((f) => reveal_new_item.begin(folder, f, false));
+            dialog.open_dialog();
+        }
 
-            var box = new Box(Orientation.VERTICAL, 16);
-            box.margin_top = 24;
-            box.margin_bottom = 24;
-            box.margin_start = 24;
-            box.margin_end = 24;
-
-            var entry = new Entry();
-            entry.placeholder_text = _("Folder name");
-            entry.text = "New Folder";
-            entry.hexpand = true;
-            box.append(entry);
-
-            var btn_box = new Box(Orientation.HORIZONTAL, 8);
-            btn_box.halign = Align.END;
-            var cancel_btn = new Button.with_label(_("Cancel"));
-            cancel_btn.add_css_class("flat");
-            cancel_btn.clicked.connect(() => dialog.close());
-            var ok_btn = new Button.with_label(_("Create"));
-            ok_btn.add_css_class("suggested-action");
-            ok_btn.clicked.connect(() => {
-                string name = entry.text.strip();
-                if (name != "") {
-                    var new_dir = current_folder.get_child(name);
-                    try {
-                        new_dir.make_directory(null);
-                        navigate_to.begin(current_folder);
-                    } catch (Error e) {
-                        warning("New folder failed: %s", e.message);
-                    }
+        private async void reveal_new_item(File folder, File item, bool rename) {
+            if (current_folder == null || !current_folder.equal(folder)) return;
+            yield navigate_to(folder);
+            for (uint i = 0; i < file_store.get_n_items(); i++) {
+                var fi = (FileItem) file_store.get_item(i);
+                if (!fi.file.equal(item)) continue;
+                var flags = ListScrollFlags.FOCUS | ListScrollFlags.SELECT;
+                if (settings.get_string("view-mode") == "grid" && _grid_view != null) {
+                    _grid_view.scroll_to(i, flags, null);
+                } else {
+                    file_view.scroll_to(i, null, flags, null);
                 }
-                dialog.close();
-            });
-            btn_box.append(cancel_btn);
-            btn_box.append(ok_btn);
-            box.append(btn_box);
-
-            var key_ctrl = new EventControllerKey();
-            key_ctrl.key_pressed.connect((kv, kc, mstate) => {
-                if (kv == Gdk.Key.Return || kv == Gdk.Key.KP_Enter) {
-                    ok_btn.clicked();
-                    return true;
+                if (rename) {
+                    Idle.add(() => {
+                        start_inline_rename(fi);
+                        return Source.REMOVE;
+                    });
                 }
-                return false;
-            });
-            entry.add_controller(key_ctrl);
+                return;
+            }
+        }
 
-            dialog.content_box.append(box);
+        private void append_new_document_menu(Singularity.Widgets.ContextMenu menu) {
+            var dir = Files.FolderTemplates.user_dir();
+            if (dir == null) return;
+            var sub = menu.add_submenu(_("New Document"), "document-new-symbolic");
+            var docs = Files.FolderTemplates.document_templates(dir);
+            foreach (var info in docs.data) {
+                string file_name = info.get_name();
+                string label = file_name;
+                int dot = file_name.last_index_of_char('.');
+                if (dot > 0) label = file_name.substring(0, dot);
+                bool uncertain;
+                string ctype = ContentType.guess(file_name, null, out uncertain);
+                string? generic = ContentType.get_generic_icon_name(ctype);
+                var source = dir.get_child(file_name);
+                sub.add_item(label, (generic ?? "text-x-generic") + "-symbolic", () => create_document_from(source));
+            }
+            if (docs.length > 0) sub.add_separator();
+            sub.add_item(_("Open Templates Folder"), "folder-templates-symbolic", () => {
+                try {
+                    dir.make_directory_with_parents(null);
+                } catch (Error e) {
+                }
+                navigate_user(dir);
+            });
+            release_on_close(sub);
+        }
+
+        private void create_document_from(File source) {
+            if (current_folder == null) return;
+            var folder = current_folder;
+            string name = Files.FolderNames.unique_file(source.get_basename(), (n) => Files.FolderNames.lookup_in(folder, n));
+            var target = folder.get_child(name);
+            source.copy_async.begin(target, FileCopyFlags.NONE, Priority.DEFAULT, null, null, (obj, res) => {
+                try {
+                    source.copy_async.end(res);
+                    reveal_new_item.begin(folder, target, true);
+                } catch (Error e) {
+                    show_toast(_("Could not create %s: %s").printf(name, e.message));
+                }
+            });
+        }
+
+        private void save_as_folder_template(File folder) {
+            var templates = Files.FolderTemplates.user_dir();
+            if (templates == null) return;
+            var dialog = new ConfirmDialog(this, _("Save as Folder Template"), "folder-templates",
+                _("“%s” will be offered as a template in New Folder. Save only its folders, or its files too?").printf(folder.get_basename()),
+                _("Folders Only"), ConfirmDialog.ActionStyle.SUGGESTED);
+            dialog.set_secondary(_("Folders and Files"));
+            if (active_window != null) dialog.transient_for = active_window;
+            dialog.response.connect((r) => {
+                if (r == ConfirmDialog.Response.CANCEL) return;
+                bool with_files = r == ConfirmDialog.Response.SECONDARY;
+                run_save_template.begin(folder, templates, with_files, (obj, res) => {
+                    string? err = run_save_template.end(res);
+                    if (err == null) show_toast(_("Saved “%s” as a folder template").printf(folder.get_basename()));
+                    else show_toast(_("Could not save the template: %s").printf(err));
+                });
+            });
             dialog.present();
-            entry.grab_focus();
-            entry.select_region(0, -1);
+        }
+
+        private static async string? run_save_template(File folder, File templates, bool with_files) {
+            SourceFunc resume = run_save_template.callback;
+            string? err = null;
+            new Thread<bool>("save-template", () => {
+                try {
+                    Files.FolderTemplates.save_folder(folder, templates, with_files);
+                } catch (Error e) {
+                    err = e.message;
+                }
+                Idle.add((owned) resume);
+                return true;
+            });
+            yield;
+            return err;
+        }
+
+        private void show_toast(string text) {
+            if (active_window != null) active_window.add_toast(new Singularity.Widgets.Toast(text));
         }
 
         private static bool is_archive_file(string? ctype) {
-            if (ctype == null) return false;
-            string[] archive_types = {
-                "application/zip", "application/x-tar",
-                "application/x-compressed-tar", "application/x-bzip-compressed-tar",
-                "application/x-xz-compressed-tar", "application/x-lzma-compressed-tar",
-                "application/x-zstd-compressed-tar", "application/x-7z-compressed",
-                "application/x-rar", "application/x-rar-compressed",
-                "application/gzip", "application/x-bzip2", "application/x-xz",
-                "application/zstd", "application/x-zstd", "application/x-lzip",
-                "application/x-lzma"
-            };
-            foreach (var t in archive_types) {
-                if (ctype == t) return true;
-            }
-            return false;
+            return Files.Archives.ArchiveFormats.is_archive_type(ctype);
         }
 
         private static bool is_image_file(FileItem item) {
@@ -2050,188 +2631,255 @@ namespace Singularity.Apps {
             desktop_settings.set_string("background-picture-uri", item.file.get_uri());
         }
 
-        private void open_archive_as_folder(FileItem item) {
-            string? src = item.file.get_path();
-            if (src == null) return;
-            try {
-                string tmpl = GLib.Path.build_filename(GLib.Environment.get_tmp_dir(), "sg-archive-XXXXXX");
-                string dest = GLib.DirUtils.make_tmp(tmpl);
-                _temp_archive_dirs += dest;
-                string[] cmd = { "bsdtar", "xf", src, "-C", dest };
-                var proc = new GLib.Subprocess.newv(cmd, GLib.SubprocessFlags.STDERR_PIPE);
-                proc.wait_async.begin(null, (obj, res) => {
-                    try {
-                        proc.wait_async.end(res);
-                        if (proc.get_exit_status() == 0) {
-                            navigate_user(File.new_for_path(dest));
-                        } else {
-                            warning("bsdtar extraction failed for %s", src);
-                        }
-                    } catch (Error e) { warning("Archive open error: %s", e.message); }
-                });
-            } catch (Error e) {
-                warning("Failed to create temp dir for archive: %s", e.message);
-            }
+        private bool is_archive_item(FileItem item) {
+            if (is_archive_file(item.info.get_content_type())) return true;
+            if (item.is_folder) return false;
+            return Files.Archives.ArchiveFormats.from_name(item.name) != Files.Archives.ArchiveKind.UNKNOWN;
         }
 
-        // Build an extraction command for the given archive, picking a tool
-        // that is actually installed. bsdtar handles every format but is not
-        // always present (e.g. Fedora), so fall back to unzip for .zip and the
-        // GNU tar for tarballs.
-        private string[]? extract_command(string src, string dest_dir) {
-            string lower = src.down();
-            if (GLib.Environment.find_program_in_path("bsdtar") != null) {
-                return { "bsdtar", "-x", "-f", src, "-C", dest_dir };
-            }
-            if (lower.has_suffix(".zip") &&
-                GLib.Environment.find_program_in_path("unzip") != null) {
-                return { "unzip", "-o", src, "-d", dest_dir };
-            }
-            if (GLib.Environment.find_program_in_path("tar") != null) {
-                return { "tar", "-x", "-f", src, "-C", dest_dir };
+        private string archive_cache_root() {
+            return GLib.Path.build_filename(GLib.Environment.get_user_cache_dir(), "singularity-files", "archives");
+        }
+
+        private string? archive_root_for(string? path) {
+            if (path == null) return null;
+            foreach (var root in _archive_views.get_keys()) {
+                if (path == root || path.has_prefix(root + "/")) return root;
             }
             return null;
         }
 
-        private void run_extract(string src, string dest_dir, bool refresh) {
-            string[]? cmd = extract_command(src, dest_dir);
-            if (cmd == null) {
-                warning("Extract: no extraction tool (bsdtar/unzip/tar) found");
+        private void open_archive_as_folder(FileItem item) {
+            string? src = item.file.get_path();
+            if (src == null) return;
+            string key = GLib.Checksum.compute_for_string(GLib.ChecksumType.SHA256,
+                "%s:%lld:%lld".printf(src, item.info.get_size(),
+                    item.info.get_modification_date_time() != null ? item.info.get_modification_date_time().to_unix() : 0));
+            string dest = GLib.Path.build_filename(archive_cache_root(), key.substring(0, 24));
+            if (_archive_views.contains(dest) && GLib.FileUtils.test(dest, GLib.FileTest.IS_DIR)) {
+                navigate_user(File.new_for_path(dest));
                 return;
             }
-            try {
-                var proc = new GLib.Subprocess.newv(cmd, GLib.SubprocessFlags.STDERR_PIPE);
-                proc.wait_check_async.begin(null, (obj, res) => {
-                    try {
-                        proc.wait_check_async.end(res);
-                        if (refresh && current_folder != null)
-                            navigate_to.begin(current_folder);
-                    } catch (Error e) {
-                        warning("Extract failed for %s: %s", src, e.message);
-                    }
-                });
-            } catch (Error e) {
-                warning("Failed to start extraction: %s", e.message);
-            }
+            Files.Archives.ArchivePaths.remove_tree(dest);
+            ensure_ops_manager();
+            var extractor = new Files.Archives.ArchiveExtractor(src, dest);
+            extractor.read_only = true;
+            extractor.use_trash = false;
+            var op = _ops.start_extract(extractor, _("Opening %s").printf(item.name));
+            op.completed.connect(() => {
+                if (op.errored || op.cancellable.is_cancelled()) {
+                    Files.Archives.ArchivePaths.remove_tree(dest);
+                    if (op.errored) show_archive_error(item.name, op.error_message);
+                    return;
+                }
+                _archive_views.insert(dest, src);
+                _temp_archive_dirs += dest;
+                navigate_user(File.new_for_path(dest));
+                if (extractor.rejected > 0) show_toast(unsafe_text(extractor.rejected));
+            });
+        }
+
+        private string unsafe_text(int count) {
+            return ngettext("%d unsafe item was not extracted", "%d unsafe items were not extracted", count).printf(count);
+        }
+
+        private void show_archive_error(string name, string? message) {
+            var dlg = new ConfirmDialog.message(this, _("Cannot Open \"%s\"").printf(name), "dialog-error",
+                message ?? _("The archive is damaged or uses a format that is not supported."));
+            dlg.transient_for = active_window;
+            dlg.present();
+        }
+
+        private void run_extract(FileItem item, string dest_dir, bool here) {
+            string? src = item.file.get_path();
+            if (src == null) return;
+            ensure_ops_manager();
+            var extractor = new Files.Archives.ArchiveExtractor(src, dest_dir);
+            var op = _ops.start_extract(extractor, _("Extracting %s").printf(item.name));
+            op.completed.connect(() => {
+                if (op.errored) {
+                    if (here) Files.Archives.ArchivePaths.remove_tree(dest_dir);
+                    show_archive_error(item.name, op.error_message);
+                    return;
+                }
+                if (op.cancellable.is_cancelled()) {
+                    if (here) Files.Archives.ArchivePaths.remove_tree(dest_dir);
+                    return;
+                }
+                string result = here ? Files.Archives.ArchiveExtractor.flatten_single_child(dest_dir) : dest_dir;
+                if (extractor.rejected > 0) show_toast(unsafe_text(extractor.rejected));
+                if (current_folder != null) navigate_to.begin(current_folder);
+                if (!here && active_window != null) {
+                    var toast = new Singularity.Widgets.Toast(_("Extracted to \"%s\"").printf(GLib.Path.get_basename(result)));
+                    toast.button_label = _("Show");
+                    toast.button_clicked.connect(() => navigate_user(File.new_for_path(result)));
+                    active_window.add_toast(toast);
+                }
+            });
         }
 
         private void extract_archive_here(FileItem item) {
             string? src = item.file.get_path();
-            string? dest_dir = item.file.get_parent()?.get_path();
-            if (src == null || dest_dir == null) return;
-            run_extract(src, dest_dir, true);
+            if (src == null) return;
+            if (archive_root_for(src) != null) {
+                extract_archive_to(file_view, item);
+                return;
+            }
+            run_extract(item, Files.Archives.ArchiveExtractor.extract_here_folder(src), true);
         }
 
         private void extract_archive_to(Widget widget, FileItem item) {
             var dialog = new FileDialog();
-            dialog.title = _("Extract To…");
+            dialog.title = _("Extract To");
+            dialog.accept_label = _("Extract");
+            dialog.initial_folder = item.file.get_parent();
             dialog.select_folder.begin(active_window, null, (obj, res) => {
                 try {
                     var dest_file = dialog.select_folder.end(res);
-                    string? src = item.file.get_path();
                     string? dest = dest_file.get_path();
-                    if (src == null || dest == null) return;
-                    run_extract(src, dest, false);
-                } catch {}
+                    if (dest == null) return;
+                    run_extract(item, dest, false);
+                } catch (Error e) {
+                }
             });
+        }
+
+        private void extract_current_archive() {
+            if (current_folder == null) return;
+            string? root = archive_root_for(current_folder.get_path());
+            if (root == null) return;
+            string archive = _archive_views.get(root);
+            var file = File.new_for_path(archive);
+            try {
+                var info = file.query_info("standard::name,standard::display-name,standard::type,standard::size,standard::content-type,time::modified",
+                    FileQueryInfoFlags.NONE, null);
+                extract_archive_to(file_view, new FileItem(file, info));
+            } catch (Error e) {
+                show_archive_error(file.get_basename(), e.message);
+            }
         }
 
         private void compress_selected_files(Widget widget) {
             var selected = get_selected_items();
             if (selected.length == 0 || current_folder == null) return;
-            string default_name = selected.length == 1 ? selected[0].name : "archive";
-
-            var dialog = new Singularity.Widgets.AppDialog((Gtk.Application)this, false);
-            dialog.title = _("Compress Files");
-            if (active_window != null) dialog.transient_for = active_window;
-            dialog.set_default_size(380, 200);
-
-            var box = new Box(Orientation.VERTICAL, 12);
-            box.margin_top = 20; box.margin_bottom = 20;
-            box.margin_start = 20; box.margin_end = 20;
-
-            var name_entry = new Entry();
-            name_entry.placeholder_text = _("Archive name");
-            name_entry.text = default_name;
-            name_entry.hexpand = true;
-            box.append(name_entry);
-
-            var fmt_row = new Box(Orientation.HORIZONTAL, 8);
-            var fmt_lbl = new Label(_("Format:"));
-            fmt_lbl.halign = Align.START;
-            var fmt_combo = new DropDown.from_strings({ "tar.gz", "zip" });
-            fmt_row.append(fmt_lbl);
-            fmt_row.append(fmt_combo);
-            box.append(fmt_row);
-
-            var btn_row = new Box(Orientation.HORIZONTAL, 8);
-            btn_row.halign = Align.END;
-            var cancel_btn = new Button.with_label(_("Cancel"));
-            cancel_btn.add_css_class("flat");
-            cancel_btn.clicked.connect(() => dialog.close());
-            var ok_btn = new Button.with_label(_("Compress"));
-            ok_btn.add_css_class("suggested-action");
-            ok_btn.clicked.connect(() => {
-                string aname = name_entry.text.strip();
-                if (aname == "") return;
-                string? cdir = current_folder.get_path();
-                if (cdir == null) { dialog.close(); return; }
-                bool is_zip = fmt_combo.selected == 1;
-                string ext = is_zip ? ".zip" : ".tar.gz";
-                string out_path = GLib.Path.build_filename(cdir, aname + ext);
-                string[] sources = {};
-                foreach (var fi in selected) { if (fi.file.get_path() != null) sources += fi.file.get_basename(); }
-                dialog.close();
-                try {
-                    string[] cmd;
-                    if (is_zip) {
-                        cmd = new string[3 + sources.length];
-                        cmd[0] = "zip"; cmd[1] = "-r"; cmd[2] = out_path;
-                        for (int i = 0; i < sources.length; i++) cmd[3 + i] = sources[i];
-                    } else {
-                        cmd = new string[4 + sources.length];
-                        cmd[0] = "tar"; cmd[1] = "czf"; cmd[2] = out_path; cmd[3] = "--";
-                        for (int i = 0; i < sources.length; i++) cmd[4 + i] = sources[i];
+            if (current_folder.get_path() == null || archive_root_for(current_folder.get_path()) != null) return;
+            string[] sources = {};
+            foreach (var fi in selected) {
+                string? p = fi.file.get_path();
+                if (p != null) sources += p;
+            }
+            if (sources.length == 0) return;
+            string default_name = selected.length == 1
+                ? Files.Archives.ArchiveFormats.stem(selected[0].name)
+                : _("Archive");
+            var dialog = new Files.Archives.CreateArchiveDialog(this, active_window, current_folder, sources, default_name);
+            dialog.create_requested.connect((creator) => {
+                ensure_ops_manager();
+                var op = _ops.start_create(creator);
+                var folder = current_folder;
+                op.completed.connect(() => {
+                    if (op.errored) {
+                        show_archive_error(GLib.Path.get_basename(creator.output_path), op.error_message);
+                        return;
                     }
-                    var launcher = new GLib.SubprocessLauncher(GLib.SubprocessFlags.STDERR_PIPE);
-                    launcher.set_cwd(cdir);
-                    var proc = launcher.spawnv(cmd);
-                    proc.wait_async.begin(null, (obj, res) => {
-                        try { proc.wait_async.end(res); } catch {}
-                        if (current_folder != null) navigate_to.begin(current_folder);
-                    });
-                } catch (Error e) { warning("Compress failed: %s", e.message); }
+                    if (op.cancellable.is_cancelled()) return;
+                    if (folder != null && op.result_path != null) {
+                        reveal_new_item.begin(folder, File.new_for_path(op.result_path), false);
+                    }
+                    if (creator.outputs.length > 1) {
+                        show_toast(ngettext("Saved in %d part", "Saved in %d parts", creator.outputs.length).printf(creator.outputs.length));
+                    }
+                });
             });
-            btn_row.append(cancel_btn);
-            btn_row.append(ok_btn);
-            box.append(btn_row);
+            dialog.open_dialog();
+        }
 
-            dialog.content_box.append(box);
-            dialog.present();
-            name_entry.grab_focus();
-            name_entry.select_region(0, -1);
+        private void add_archive_properties(Grid grid, int row, File file) {
+            string? path = file.get_path();
+            if (path == null) return;
+            var rows = new Gee.ArrayList<Label>();
+            string[] captions = { _("Contents:"), _("Compressed:"), _("Uncompressed:"), _("Ratio:"), _("Format:") };
+            for (int i = 0; i < captions.length; i++) {
+                var lbl = new Label(captions[i]);
+                lbl.halign = Align.END;
+                lbl.add_css_class("dim-label");
+                lbl.add_css_class("caption");
+                grid.attach(lbl, 0, row + i);
+                var val = new Label(i == 0 ? _("Reading the archive…") : "");
+                val.halign = Align.START;
+                val.wrap = true;
+                val.max_width_chars = 28;
+                val.selectable = true;
+                grid.attach(val, 1, row + i);
+                rows.add(val);
+            }
+            var cancel = new Cancellable();
+            grid.destroy.connect(() => cancel.cancel());
+            new Thread<bool>("files-archive-props", () => {
+                Files.Archives.ArchiveListing? listing = null;
+                string? err = null;
+                try {
+                    listing = Files.Archives.ArchiveReader.list(path, null, cancel);
+                } catch (Error e) {
+                    err = e.message;
+                }
+                GLib.Idle.add(() => {
+                    if (listing == null) {
+                        rows[0].label = err ?? _("Cannot read the archive.");
+                        return GLib.Source.REMOVE;
+                    }
+                    string files = ngettext("%d file", "%d files", listing.files).printf(listing.files);
+                    string folders = ngettext("%d folder", "%d folders", listing.folders).printf(listing.folders);
+                    rows[0].label = listing.folders > 0 ? "%s, %s".printf(files, folders) : files;
+                    rows[1].label = listing.volumes > 1
+                        ? ngettext("%s in %d part", "%s in %d parts", listing.volumes).printf(GLib.format_size(listing.compressed), listing.volumes)
+                        : GLib.format_size(listing.compressed);
+                    rows[2].label = GLib.format_size(listing.uncompressed);
+                    rows[3].label = Files.Archives.ArchiveFormats.ratio_text(listing.compressed, listing.uncompressed);
+                    string format = listing.kind.label();
+                    if (listing.format_name != "") format = "%s, %s".printf(format, listing.format_name);
+                    if (listing.encrypted) format = _("%s, protected with a password").printf(format);
+                    rows[4].label = format;
+                    return GLib.Source.REMOVE;
+                });
+                return true;
+            });
         }
 
         private void _cleanup_temp_archive_dirs() {
             foreach (var d in _temp_archive_dirs) {
-                try {
-                    var f = File.new_for_path(d);
-                    delete_recursive(f);
-                } catch {}
+                Files.Archives.ArchivePaths.remove_tree(d);
             }
             _temp_archive_dirs = {};
+            _archive_views.remove_all();
         }
 
-        private static void delete_recursive(File file) throws Error {
-            var info = file.query_info("standard::type", FileQueryInfoFlags.NOFOLLOW_SYMLINKS);
-            if (info.get_file_type() == FileType.DIRECTORY) {
-                var children = file.enumerate_children("standard::name", FileQueryInfoFlags.NOFOLLOW_SYMLINKS);
-                FileInfo? child_info;
-                while ((child_info = children.next_file()) != null) {
-                    delete_recursive(file.get_child(child_info.get_name()));
+        private FileItem? list_item_at(double x, double y) {
+            Widget? w = file_view.pick(x, y, PickFlags.DEFAULT);
+            while (w != null && w != file_view) {
+                if (w.get_css_name() == "row") {
+                    for (var cell = w.get_first_child(); cell != null; cell = cell.get_next_sibling()) {
+                        var child = cell.get_first_child();
+                        if (child == null) continue;
+                        var fi = child.get_data<FileItem>("file-item");
+                        if (fi != null) return fi;
+                    }
+                    return null;
+                }
+                w = w.get_parent();
+            }
+            return null;
+        }
+
+        private void select_for_menu(FileItem item) {
+            var sel = file_view.model as SelectionModel;
+            if (sel == null) return;
+            for (uint i = 0; i < file_store.get_n_items(); i++) {
+                if (file_store.get_item(i) == item) {
+                    if (!sel.is_selected(i)) sel.select_item(i, true);
+                    return;
                 }
             }
-            file.delete();
         }
 
         private void show_context_menu(Widget widget, FileItem item, double mx = -1, double my = -1) {
@@ -2269,25 +2917,24 @@ namespace Singularity.Apps {
                 });
                 if (!item.is_folder) {
                     string? item_ctype = item.info.get_content_type();
-                    if (is_archive_file(item_ctype)) {
-                        menu.add_item("Open as Folder", "folder-open-symbolic", () => {
+                    if (is_archive_file(item_ctype) || is_archive_item(item)) {
+                        menu.add_item(_("Open as Folder"), "folder-open-symbolic", () => {
                             open_archive_as_folder(item);
                         });
-                        menu.add_item("Extract Here", "package-x-generic-symbolic", () => {
+                        menu.add_item(_("Extract Here"), "package-x-generic-symbolic", () => {
                             extract_archive_here(item);
                         });
-                        menu.add_item("Extract To…", "folder-download-symbolic", () => {
+                        menu.add_item(_("Extract To…"), "folder-download-symbolic", () => {
                             extract_archive_to(widget, item);
                         });
                         menu.add_separator();
-                    } else {
-                        menu.add_item("Open With…", "preferences-other-symbolic", () => {
-                            GLib.Idle.add(() => {
-                                show_open_with_menu(widget, item, mx, my);
-                                return GLib.Source.REMOVE;
-                            });
-                        });
                     }
+                    menu.add_item(_("Open With…"), "preferences-other-symbolic", () => {
+                        GLib.Idle.add(() => {
+                            FileOpener.open_with(item.file, active_window);
+                            return GLib.Source.REMOVE;
+                        });
+                    });
                     if (is_runnable(item.file)) {
                         menu.add_item("Run as Program", "system-run-symbolic", () => {
                             run_program(item.file);
@@ -2299,13 +2946,25 @@ namespace Singularity.Apps {
                         });
                     }
                 }
-                menu.add_item("Compress…", "package-x-generic-symbolic", () => {
-                    compress_selected_files(widget);
-                });
+                append_plugin_file_actions(menu, item);
+                Files.CloudMountActions.append_offline_item(menu, menu_target_files(item));
+                if (archive_root_for(current_folder != null ? current_folder.get_path() : null) == null) {
+                    menu.add_item(_("Compress…"), "package-x-generic-symbolic", () => {
+                        compress_selected_files(widget);
+                    });
+                }
                 menu.add_item("Rename", "document-edit-symbolic", () => {
                     start_inline_rename(item);
                 });
                 menu.add_separator();
+                menu.add_item(_("Share…"), "singularity-share-symbolic", () => {
+                    share_files(menu_target_files(item));
+                });
+                if (!menu_targets_folder(item)) {
+                    menu.add_item(_("Copy Link"), "insert-link-symbolic", () => {
+                        copy_link_files(menu_target_files(item));
+                    });
+                }
                 menu.add_item("Copy", "edit-copy-symbolic", () => {
                     clipboard_set_for_menu(item, false);
                 });
@@ -2314,14 +2973,22 @@ namespace Singularity.Apps {
                     if (current_folder != null) navigate_to.begin(current_folder);
                 });
                 menu.add_separator();
-                menu.add_item("Move to Trash", "user-trash-symbolic", () => {
-                    try {
-                        item.file.trash(null);
-                        if (current_folder != null) navigate_to.begin(current_folder);
-                    } catch (Error e) {
-                        warning("Trash failed: %s", e.message);
-                    }
-                });
+                if (Files.CloudMountActions.covers(menu_target_files(item))) {
+                    menu.add_item(_("Delete…"), "edit-delete-symbolic", () => {
+                        Files.CloudMountActions.confirm_delete(active_window, menu_target_files(item), () => {
+                            if (current_folder != null) navigate_to.begin(current_folder);
+                        });
+                    });
+                } else {
+                    menu.add_item("Move to Trash", "user-trash-symbolic", () => {
+                        try {
+                            item.file.trash(null);
+                            if (current_folder != null) navigate_to.begin(current_folder);
+                        } catch (Error e) {
+                            warning("Trash failed: %s", e.message);
+                        }
+                    });
+                }
                 if (item.is_folder) {
                     string? fpath = item.file.get_path();
                     if (fpath != null) {
@@ -2335,6 +3002,9 @@ namespace Singularity.Apps {
                                 else add_bookmark(fpath);
                             }
                         );
+                        menu.add_item(_("Save as Folder Template…"), "folder-templates-symbolic", () => {
+                            save_as_folder_template(item.file);
+                        });
                     }
                 }
             }
@@ -2357,57 +3027,48 @@ namespace Singularity.Apps {
             menu.add_item("Properties", "document-properties-symbolic", () => {
                 show_properties(item);
             });
+            release_on_close(menu);
             menu.popup();
         }
 
-        private void show_open_with_menu(Widget widget, FileItem item, double mx = -1, double my = -1) {
-            string? ctype = item.info.get_content_type();
-            if (ctype == null) return;
-            var apps = GLib.AppInfo.get_all_for_type(ctype);
-            if (apps.length() == 0) return;
-            var popover = new Popover();
-            popover.add_css_class("context-menu");
-            popover.set_parent(widget);
-            popover.has_arrow = false;
-            if (mx >= 0 && my >= 0) {
-                Gdk.Rectangle rect = { (int)mx, (int)my, 1, 1 };
-                popover.set_pointing_to(rect);
-            }
-            var box = new Box(Orientation.VERTICAL, 0);
-            box.margin_top = 4;
-            box.margin_bottom = 4;
-            apps.foreach((app) => {
-                var btn = new Button();
-                btn.has_frame = false;
-                btn.add_css_class("menu-row");
-                var hbox = new Box(Orientation.HORIZONTAL, 10);
-                var gicon = app.get_icon();
-                var ico = (gicon != null)
-                    ? new Image.from_gicon(gicon)
-                    : new Image.from_icon_name("application-x-executable-symbolic");
-                ico.pixel_size = 16;
-                hbox.append(ico);
-                var lbl = new Label(app.get_name());
-                lbl.halign = Align.START;
-                hbox.append(lbl);
-                btn.set_child(hbox);
-                btn.set_data<GLib.AppInfo>("app-info", app);
-                btn.clicked.connect(() => {
-                    popover.popdown();
-                    var ai = btn.get_data<GLib.AppInfo>("app-info");
-                    if (ai == null) return;
-                    try {
-                        var files = new GLib.List<GLib.File>();
-                        files.append(item.file);
-                        ai.launch(files, null);
-                    } catch (Error e) {
-                        warning("Open With launch failed: %s", e.message);
-                    }
-                });
-                box.append(btn);
+        private void release_on_close(Popover popover) {
+            popover.closed.connect(on_popover_closed);
+        }
+
+        private void on_popover_closed(Popover popover) {
+            popover.closed.disconnect(on_popover_closed);
+            Idle.add(() => {
+                popover.unparent();
+                return Source.REMOVE;
             });
-            popover.set_child(box);
-            popover.popup();
+        }
+
+        private void append_plugin_file_actions(Singularity.Widgets.ContextMenu menu, FileItem item) {
+            var selected = get_selected_items();
+            bool in_selection = false;
+            foreach (var s in selected.data) {
+                if (s.file.equal(item.file)) in_selection = true;
+            }
+            GLib.File[] files = {};
+            string?[] types = {};
+            if (in_selection) {
+                foreach (var t in selected.data) {
+                    files += t.file;
+                    types += t.info.get_content_type();
+                }
+            } else {
+                files += item.file;
+                types += item.info.get_content_type();
+            }
+            var actions = FilesPluginManager.get_default().actions_for(files, types);
+            if (actions.length == 0) return;
+            menu.add_separator();
+            foreach (var action in actions) {
+                var captured = action;
+                GLib.File[] captured_files = files;
+                menu.add_item(action.label, action.icon_name, () => captured.activate(captured_files));
+            }
+            menu.add_separator();
         }
 
         private void show_column_menu(Widget widget, double mx, double my) {
@@ -2436,6 +3097,7 @@ namespace Singularity.Apps {
                 box.append(chk);
             }
             popover.set_child(box);
+            release_on_close(popover);
             popover.popup();
         }
 
@@ -2483,12 +3145,12 @@ namespace Singularity.Apps {
             _rename_label   = label;
             _rename_row_box = row_box;
 
-            // Pre-select the stem only for files with an extension;
-            // folders have no dot/extension contract.
-            int dot = fi.name.last_index_of_char('.');
-            if (dot > 0 && !fi.is_folder) entry.select_region(0, dot);
-            else                          entry.select_region(0, -1);
-            Idle.add(() => { entry.grab_focus(); return false; });
+            int stem = Files.FolderNames.stem_length(fi.name, fi.is_folder);
+            Idle.add(() => {
+                entry.grab_focus_without_selecting();
+                entry.select_region(0, stem);
+                return false;
+            });
 
             var key = new EventControllerKey();
             key.set_propagation_phase(PropagationPhase.CAPTURE);
@@ -2601,65 +3263,125 @@ namespace Singularity.Apps {
         }
 
         private void show_rename_dialog(FileItem item) {
-            var dialog = new Singularity.Widgets.AppDialog((Gtk.Application)this, false);
-            dialog.title = _("Rename");
-            dialog.transient_for = (Gtk.Window)file_view.get_root();
-            dialog.set_default_size(360, 160);
+            var dialog = new Singularity.Widgets.AppDialog((Gtk.Application) this, true);
+            dialog.set_title(item.is_folder ? _("Rename Folder") : _("Rename File"));
+            dialog.transient_for = (Gtk.Window) file_view.get_root();
+            dialog.set_default_size(440, -1);
+            dialog.resizable = false;
+            var parent = item.file.get_parent();
 
-            var box = new Box(Orientation.VERTICAL, 16);
-            box.margin_top = 24;
-            box.margin_bottom = 24;
-            box.margin_start = 24;
-            box.margin_end = 24;
+            var body = new Box(Orientation.VERTICAL, 6);
+            body.margin_start = body.margin_end = 24;
+            body.margin_top = 6;
+            body.margin_bottom = 8;
 
             var entry = new Entry();
             entry.text = item.name;
             entry.hexpand = true;
-            box.append(entry);
+            Singularity.Widgets.ContextMenu.attach_editable(entry);
+            body.append(entry);
 
-            var btn_box = new Box(Orientation.HORIZONTAL, 8);
-            btn_box.halign = Align.END;
-            var cancel_btn = new Button.with_label(_("Cancel"));
-            cancel_btn.add_css_class("flat");
-            cancel_btn.clicked.connect(() => dialog.close());
+            var message = new Box(Orientation.HORIZONTAL, 6);
+            message.height_request = 20;
+            var message_icon = new Image();
+            message_icon.pixel_size = 16;
+            message.append(message_icon);
+            var message_label = new Label("");
+            message_label.xalign = 0;
+            message_label.wrap = true;
+            message_label.hexpand = true;
+            message_label.add_css_class("caption");
+            message.append(message_label);
+            body.append(message);
+            dialog.content_box.append(body);
+
+            var bar = new Box(Orientation.HORIZONTAL, 8);
+            bar.margin_start = bar.margin_end = 18;
+            bar.margin_bottom = 16;
+            bar.margin_top = 4;
+            bar.halign = Align.END;
+            bar.append(dialog.add_cancel_button());
             var ok_btn = new Button.with_label(_("Rename"));
             ok_btn.add_css_class("suggested-action");
+            bar.append(ok_btn);
+            dialog.content_box.append(bar);
+            dialog.default_widget = ok_btn;
+
+            Files.NameLookup lookup = (n) => {
+                if (n == item.name || parent == null) return FileType.UNKNOWN;
+                return Files.FolderNames.lookup_in(parent, n);
+            };
+            entry.changed.connect(() => {
+                var state = Files.FolderNames.check(entry.text, lookup);
+                bool error = state.blocks() && state != Files.NameState.EMPTY;
+                message_label.label = Files.FolderNames.message(state, entry.text);
+                message_icon.visible = message_label.label != "";
+                message_icon.icon_name = error ? "dialog-error-symbolic" : "dialog-information-symbolic";
+                foreach (var w in new Widget[] { message_label, message_icon, entry }) {
+                    w.remove_css_class("error");
+                    w.remove_css_class("dim-label");
+                }
+                message_label.add_css_class(error ? "error" : "dim-label");
+                message_icon.add_css_class(error ? "error" : "dim-label");
+                if (error) entry.add_css_class("error");
+                ok_btn.sensitive = !state.blocks();
+            });
             ok_btn.clicked.connect(() => {
+                if (Files.FolderNames.check(entry.text, lookup).blocks()) return;
                 string new_name = entry.text.strip();
-                if (new_name != "" && new_name != item.name) {
+                if (new_name != item.name) {
                     try {
                         item.file.set_display_name(new_name, null);
                         if (current_folder != null) navigate_to.begin(current_folder);
                     } catch (Error e) {
-                        warning("Rename failed: %s", e.message);
+                        message_label.label = e.message;
+                        message_label.remove_css_class("dim-label");
+                        message_label.add_css_class("error");
+                        message_icon.icon_name = "dialog-error-symbolic";
+                        message_icon.visible = true;
+                        return;
                     }
                 }
                 dialog.close();
             });
-            btn_box.append(cancel_btn);
-            btn_box.append(ok_btn);
-            box.append(btn_box);
+            entry.activate.connect(() => ok_btn.clicked());
+            entry.changed();
 
-            // Enter key in entry triggers rename
-            var key_ctrl = new EventControllerKey();
-            key_ctrl.key_pressed.connect((kv, kc, mstate) => {
-                if (kv == Gdk.Key.Return || kv == Gdk.Key.KP_Enter) {
-                    ok_btn.clicked();
-                    return true;
-                }
-                return false;
-            });
-            entry.add_controller(key_ctrl);
-
-            dialog.content_box.append(box);
             dialog.present();
             entry.grab_focus();
+            entry.select_region(0, Files.FolderNames.stem_length(item.name, item.is_folder));
         }
 
         private void trigger_preview(string uri) {
+            const int PREVIEW_NEIGHBOURS = 500;
+            int position = -1;
+            uint n = file_store.get_n_items();
+            for (uint i = 0; i < n; i++) {
+                var item = (FileItem) file_store.get_item(i);
+                if (item.file.get_uri() == uri) {
+                    position = (int) i;
+                    break;
+                }
+            }
+            string[] uris = {};
+            int index = 0;
+            if (position < 0) {
+                uris += uri;
+            } else {
+                int first = int.max(0, position - PREVIEW_NEIGHBOURS);
+                int last = int.min((int) n - 1, position + PREVIEW_NEIGHBOURS);
+                for (int i = first; i <= last; i++) {
+                    uris += ((FileItem) file_store.get_item(i)).file.get_uri();
+                }
+                index = position - first;
+            }
             try {
                 var preview = Bus.get_proxy_sync<PreviewService>(BusType.SESSION, "dev.sinty.desktop", "/dev/sinty/shell/Preview");
-                preview.show_preview(uri);
+                try {
+                    preview.show_previews(uris, index, "dev.sinty.files");
+                } catch (DBusError.UNKNOWN_METHOD e) {
+                    preview.show_preview(uri);
+                }
             } catch (Error e) {
                 warning("Failed to trigger preview: %s", e.message);
             }
@@ -2723,7 +3445,7 @@ namespace Singularity.Apps {
                 return;
             }
             // Open archives as browsable folders by extracting to a temp dir
-            if (is_archive_file(file_item.info.get_content_type())) {
+            if (is_archive_item(file_item)) {
                 open_archive_as_folder(file_item);
                 return;
             }
@@ -2870,10 +3592,15 @@ namespace Singularity.Apps {
                 child = next;
             }
             var bookmarks = load_gtk_bookmarks();
-            if (bookmarks.length > 0) {
+            int shown_bookmarks = 0;
+            foreach (var bm in bookmarks) {
+                if (picker_mode || !Files.CloudLocations.is_cloud_path(bm.path)) shown_bookmarks++;
+            }
+            if (shown_bookmarks > 0) {
                 _bookmarks_section.append(new Separator(Orientation.HORIZONTAL));
                 _bookmarks_section.append(new Singularity.Widgets.SidebarSectionLabel("Bookmarks"));
                 foreach (var bm in bookmarks) {
+                    if (!picker_mode && Files.CloudLocations.is_cloud_path(bm.path)) continue;
                     add_bookmark_button(_bookmarks_section, bm.label, bm.path);
                 }
             }
@@ -2903,6 +3630,7 @@ namespace Singularity.Apps {
                 menu.add_item("Remove Bookmark", "list-remove-symbolic", () => {
                     remove_bookmark(path);
                 });
+                release_on_close(menu);
                 menu.popup();
                 gesture.set_state(EventSequenceState.CLAIMED);
             });
@@ -3042,6 +3770,15 @@ namespace Singularity.Apps {
             }
         }
 
+        private FileItem connect_server_item() {
+            var info = new GLib.FileInfo();
+            info.set_name(_("Connect to Server"));
+            info.set_display_name(_("Connect to Server"));
+            info.set_file_type(GLib.FileType.UNKNOWN);
+            info.set_icon(new GLib.ThemedIcon("network-server"));
+            return new FileItem(GLib.File.new_for_uri("x-singularity://connect-to-server"), info);
+        }
+
         private void show_connect_to_server_dialog() {
             var dialog = new ConnectToServerDialog((Gtk.Application)this);
             if (active_window != null) dialog.transient_for = active_window;
@@ -3117,6 +3854,14 @@ namespace Singularity.Apps {
 
         // Highlight the sidebar button whose path is the closest ancestor of (or equal to) `folder`.
         private void sync_sidebar_active(File folder) {
+            if (_cloud_view != null) {
+                _cloud_view.locations.sync_active_path(folder);
+                if (_cloud_view.locations.active_id != "") {
+                    foreach (var entry in _place_buttons.entries) entry.value.remove_css_class("sidebar-nav-active");
+                    if (_disks_sidebar_btn != null) _disks_sidebar_btn.remove_css_class("sidebar-nav-active");
+                    return;
+                }
+            }
             string current_uri = folder.get_uri();
             string best_key = "";
             int best_len = -1;
@@ -3160,6 +3905,25 @@ namespace Singularity.Apps {
         private void update_nav_buttons() {
             if (back_btn != null) back_btn.visible = nav_index > 0;
             if (fwd_btn != null)  fwd_btn.visible  = nav_index < (int)nav_history.length - 1;
+            if (swipe_nav != null) {
+                swipe_nav.can_go_back = nav_index > 0;
+                swipe_nav.can_go_forward = nav_index < (int)nav_history.length - 1;
+            }
+            update_menu_actions();
+        }
+
+        private void go_back() {
+            if (nav_index <= 0) return;
+            nav_index--;
+            update_nav_buttons();
+            navigate_to.begin(nav_history[nav_index]);
+        }
+
+        private void go_forward() {
+            if (nav_index >= (int)nav_history.length - 1) return;
+            nav_index++;
+            update_nav_buttons();
+            navigate_to.begin(nav_history[nav_index]);
         }
 
         private void navigate_user(File folder) {
@@ -3185,6 +3949,11 @@ namespace Singularity.Apps {
                 var next = child.get_next_sibling();
                 path_bar.remove(child);
                 child = next;
+            }
+            string? archive_root = archive_root_for(folder.get_path());
+            if (archive_root != null) {
+                update_archive_path_bar(folder, archive_root);
+                return;
             }
             string furi = folder.get_uri();
             if (furi.has_prefix("trash://")) {
@@ -3219,6 +3988,7 @@ namespace Singularity.Apps {
                 // At the home root, show the user's display name beside the icon.
                 string home_target = home_dir;
                 var home_btn = new Button.from_icon_name("user-home-symbolic");
+                home_btn.tooltip_text = _("Home");
                 home_btn.add_css_class("flat");
                 home_btn.add_css_class("path-button");
                 home_btn.clicked.connect(() => navigate_user(File.new_for_path(home_target)));
@@ -3314,6 +4084,61 @@ namespace Singularity.Apps {
                     path_bar.append(btn);
                 }
             }
+        }
+
+        private void update_archive_path_bar(File folder, string root) {
+            string archive = _archive_views.get(root);
+            string root_target = root;
+            var root_btn = new Button();
+            var root_box = new Box(Orientation.HORIZONTAL, 6);
+            root_box.append(new Image.from_icon_name("package-x-generic-symbolic"));
+            var root_lbl = new Label(GLib.Path.get_basename(archive));
+            root_lbl.ellipsize = Pango.EllipsizeMode.MIDDLE;
+            root_lbl.max_width_chars = 18;
+            root_box.append(root_lbl);
+            root_btn.child = root_box;
+            root_btn.tooltip_text = archive;
+            root_btn.add_css_class("flat");
+            root_btn.add_css_class("path-button");
+            root_btn.clicked.connect(() => navigate_user(File.new_for_path(root_target)));
+            path_bar.append(root_btn);
+            string path = folder.get_path() ?? root;
+            if (path == root) return;
+            string[] segs = path.substring(root.length + 1).split("/");
+            int start = segs.length > 3 ? segs.length - 2 : 0;
+            if (start > 0) {
+                path_bar.append(make_path_separator());
+                var ellipsis = new Label("..");
+                ellipsis.add_css_class("dim-label");
+                path_bar.append(ellipsis);
+            }
+            for (int i = start; i < segs.length; i++) {
+                string target = root;
+                for (int j = 0; j <= i; j++) target += "/" + segs[j];
+                path_bar.append(make_path_separator());
+                var btn = new Button.with_label(segs[i]);
+                btn.add_css_class("flat");
+                btn.add_css_class("path-button");
+                var lbl = btn.get_child() as Label;
+                if (lbl != null) {
+                    lbl.ellipsize = Pango.EllipsizeMode.END;
+                    lbl.max_width_chars = 14;
+                }
+                btn.clicked.connect(() => navigate_user(File.new_for_path(target)));
+                path_bar.append(btn);
+            }
+        }
+
+        private void sync_archive_banner(File folder) {
+            if (_archive_banner == null) return;
+            string? root = archive_root_for(folder.get_path());
+            if (root == null) {
+                _archive_banner.visible = false;
+                return;
+            }
+            _archive_banner.title = _("You are looking inside \"%s\". Its contents are read only until you extract them.").printf(
+                GLib.Path.get_basename(_archive_views.get(root)));
+            _archive_banner.visible = true;
         }
 
         private void update_path_completions() {
@@ -3414,10 +4239,12 @@ namespace Singularity.Apps {
                             navigate_to_uri("recent://");
                         });
                         current_folder = null;
+                        update_menu_actions();
                         if (empty_trash_btn != null) empty_trash_btn.visible = false;
                         // Highlight "Recent" in the sidebar
                         sync_sidebar_active(File.new_for_uri("recent://"));
                         sync_after_special_uri(File.new_for_uri("recent://"));
+                        if (objects.length == 0 && settings.get_string("view-mode") != "column") show_empty_state("recent");
                     } catch (Error e) {
                         warning("Failed to load recent files: %s", e.message);
                     }
@@ -3426,13 +4253,7 @@ namespace Singularity.Apps {
                 navigate_to.begin(File.new_for_uri("trash://"));
             } else if (uri == "smb://") {
                 // Show "Connect to Server" immediately, then enumerate network shares async
-                var conn_info = new GLib.FileInfo();
-                conn_info.set_name("connect-to-server");
-                conn_info.set_display_name("New Connection");
-                conn_info.set_file_type(GLib.FileType.UNKNOWN);
-                conn_info.set_icon(new GLib.ThemedIcon("network-server"));
-                var conn_item = new FileItem(GLib.File.new_for_uri("x-singularity://connect-to-server"), conn_info);
-                file_store.splice(0, file_store.get_n_items(), { conn_item });
+                file_store.splice(0, file_store.get_n_items(), { connect_server_item() });
 
                 // Update path bar
                 Widget child = path_bar.get_first_child();
@@ -3445,6 +4266,7 @@ namespace Singularity.Apps {
                     navigate_to_uri("smb://");
                 });
                 current_folder = File.new_for_uri(uri);
+                update_menu_actions();
                 if (empty_trash_btn != null) empty_trash_btn.visible = false;
                 sync_sidebar_active(current_folder);
                 sync_after_special_uri(current_folder);
@@ -3551,23 +4373,54 @@ namespace Singularity.Apps {
             }
         }
 
-        private void load_thumbnail_async(Image img, Spinner? spinner, string file_path, int size) {
-            string path = file_path;
-            int px = size;
+        private void bind_thumbnail(Image img, Spinner? spinner, FileItem file_item, int size, bool compact) {
+            img.set_data<string>("thumb-for-path", "");
+            img.set_from_gicon(file_item.info.get_icon());
+            if (spinner != null) {
+                spinner.spinning = false;
+                spinner.visible = false;
+            }
+            if (!settings.get_boolean("show-previews")) return;
+            string? fpath = file_item.file.get_path();
+            if (fpath == null) return;
+            string? content_type = file_item.info.get_content_type();
+            string? cached = file_item.info.get_attribute_byte_string("thumbnail::path");
+            if (file_item.info.has_attribute("thumbnail::is-valid")
+                    && !file_item.info.get_attribute_boolean("thumbnail::is-valid")) {
+                cached = null;
+            }
+            bool is_image = Files.ThumbnailStyle.for_content_type(content_type) == Files.ThumbnailStyle.PHOTO;
+            if (cached == null && !is_image) {
+                apply_plugin_icon(img, file_item, size, compact);
+                return;
+            }
+            img.set_data<string>("thumb-for-path", fpath);
+            if (spinner != null && cached == null) {
+                img.set_from_icon_name("image-loading-symbolic");
+                spinner.spinning = true;
+                spinner.visible = true;
+            }
+            load_thumbnail_async(img, spinner, cached ?? fpath, fpath, size, content_type, file_item.info.get_icon(), compact);
+        }
 
+        private void load_thumbnail_async(Image img, Spinner? spinner, string source_path, string file_path,
+                                          int size, string? content_type, GLib.Icon? fallback, bool compact) {
+            int px = int.min(512, int.max(48, size * 2));
             new GLib.Thread<void>("thumb", () => {
-                Gdk.Pixbuf? pb = null;
+                Gdk.Texture? texture = null;
                 try {
-                    pb = new Gdk.Pixbuf.from_file_at_scale(path, px, px, true);
+                    var pb = new Gdk.Pixbuf.from_file_at_scale(source_path, px, px, true);
+                    pb = pb.apply_embedded_orientation() ?? pb;
+                    var format = pb.has_alpha ? Gdk.MemoryFormat.R8G8B8A8 : Gdk.MemoryFormat.R8G8B8;
+                    texture = new Gdk.MemoryTexture(pb.width, pb.height, format, pb.read_pixel_bytes(), pb.rowstride);
                 } catch (Error e) {}
                 GLib.Idle.add(() => {
-                    // Only update if the widget still wants this thumbnail (not recycled)
                     string? expected = img.get_data<string>("thumb-for-path");
-                    if (expected != null && expected == path) {
-                        if (pb != null)
-                            img.set_from_pixbuf(pb);
+                    if (expected != null && expected == file_path) {
+                        if (texture != null)
+                            img.set_from_paintable(Files.ThumbnailFrame.decorate(texture, content_type, file_path, compact));
                         else
-                            img.set_from_icon_name("image-x-generic-symbolic");
+                            img.set_from_gicon(fallback ?? new ThemedIcon("image-x-generic"));
                         if (spinner != null) {
                             spinner.spinning = false;
                             spinner.visible = false;
@@ -3578,7 +4431,7 @@ namespace Singularity.Apps {
             });
         }
 
-        private bool apply_plugin_icon(Image img, FileItem file_item, int size) {
+        private bool apply_plugin_icon(Image img, FileItem file_item, int size, bool compact) {
             var mgr = FilesPluginManager.get_default();
             if (!mgr.has_icon_providers()) return false;
             string? content_type = file_item.info.get_content_type();
@@ -3592,7 +4445,7 @@ namespace Singularity.Apps {
                 if (paintable == null) return;
                 string? expected = img.get_data<string>("thumb-for-path");
                 if (expected != null && expected == fpath) {
-                    img.set_from_paintable(paintable);
+                    img.set_from_paintable(Files.ThumbnailFrame.decorate(paintable, content_type, fpath, compact));
                 }
             });
             return true;
@@ -3614,10 +4467,11 @@ namespace Singularity.Apps {
                 var enumerator = yield folder.enumerate_children_async(
                     "standard::name,standard::type,standard::size,standard::icon," +
                     "standard::is-hidden,standard::is-symlink,standard::content-type," +
-                    "time::modified,thumbnail::path,trash::orig-path,owner::user",
+                    "time::modified,thumbnail::path,thumbnail::is-valid,trash::orig-path,owner::user",
                     FileQueryInfoFlags.NOFOLLOW_SYMLINKS, Priority.DEFAULT, null);
                 if (generation != navigation_generation) return;
                 current_folder = folder;
+                update_menu_actions();
                 string uri = folder.get_uri();
                 // Toggle empty-trash button
                 if (empty_trash_btn != null)
@@ -3625,6 +4479,7 @@ namespace Singularity.Apps {
                 if (uri.has_prefix("file://"))
                     settings.set_string("last-folder", uri);
                 update_path_bar(folder);
+                sync_archive_banner(folder);
                 sync_sidebar_active(folder);
 
                 // Navigation reaching here is always external (sidebar,
@@ -3814,6 +4669,12 @@ namespace Singularity.Apps {
 
         private void go_up() {
             if (current_folder != null) {
+                string? root = archive_root_for(current_folder.get_path());
+                if (root != null && current_folder.get_path() == root) {
+                    var archive_parent = File.new_for_path(_archive_views.get(root)).get_parent();
+                    if (archive_parent != null) navigate_user(archive_parent);
+                    return;
+                }
                 var parent = current_folder.get_parent();
                 if (parent != null) {
                     navigate_user(parent);
@@ -3957,6 +4818,7 @@ namespace Singularity.Apps {
             }
 
             current_folder = null;
+            update_menu_actions();
             if (empty_trash_btn != null) empty_trash_btn.visible = false;
             mark_disks_sidebar_active();
 
@@ -4138,16 +5000,9 @@ namespace Singularity.Apps {
                 // show an empty Network page.
                 string uri = folder.get_uri();
                 if (uri.has_prefix("smb://") && uri.length <= 6) {
-                    // Seed with the synthetic "New Connection" entry so the
+                    // Seed with the synthetic "Connect to Server" entry so the
                     // column matches what grid/list view shows.
-                    var conn_info = new GLib.FileInfo();
-                    conn_info.set_name("connect-to-server");
-                    conn_info.set_display_name("New Connection");
-                    conn_info.set_file_type(GLib.FileType.UNKNOWN);
-                    conn_info.set_icon(new GLib.ThemedIcon("network-server"));
-                    items.add(new FileItem(
-                        GLib.File.new_for_uri("x-singularity://connect-to-server"),
-                        conn_info));
+                    items.add(connect_server_item());
                     var provider = new Singularity.FileSystem.SambaProvider();
                     try {
                         var shares = yield provider.enumerate(uri, null);
@@ -4271,8 +5126,9 @@ namespace Singularity.Apps {
                     if (fi.is_folder) {
                         load_column_pane(captured_idx2 + 1, fi.file);
                         current_folder = fi.file;
+                        update_menu_actions();
                         update_path_bar(fi.file);
-                    } else if (is_archive_file(fi.info.get_content_type())) {
+                    } else if (is_archive_item(fi)) {
                         open_archive_as_folder(fi);
                     } else {
                         launch_file(fi.file);
@@ -4299,18 +5155,7 @@ namespace Singularity.Apps {
 
 
         private void launch_file(File file) {
-            try {
-                var launcher = new Gtk.FileLauncher(file);
-                launcher.launch.begin(null, null, (obj, res) => {
-                    try {
-                        launcher.launch.end(res);
-                    } catch (Error e) {
-                        warning("Launch failed: %s", e.message);
-                    }
-                });
-            } catch (Error e) {
-                 warning("Launch setup failed: %s", e.message);
-            }
+            FileOpener.open(file, active_window);
         }
 
         private bool is_runnable(File file) {
@@ -4430,6 +5275,9 @@ namespace Singularity.Apps {
                     add_info_row("Permissions:", perms);
                 }
             }
+            if (effective_item != null && !effective_item.is_folder && is_archive_item(effective_item)) {
+                add_archive_properties(grid, row, file);
+            }
             box.append(grid);
             var btn_box = new Box(Orientation.HORIZONTAL, 12);
             btn_box.halign = Align.END;
@@ -4437,6 +5285,7 @@ namespace Singularity.Apps {
             var close_btn = new Button.with_label(_("Close"));
             close_btn.add_css_class("close-button");
             close_btn.clicked.connect(() => dialog.close());
+            dialog.set_cancel_button(close_btn);
             btn_box.append(close_btn);
             box.append(btn_box);
             dialog.content_box.append(box);

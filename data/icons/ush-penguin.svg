@@ -1,17 +1,25 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-  <!-- feet -->
-  <path d="M11.5 26.5c-.8 1.6-2.6 2.3-4.2 2.5-.7.1-1-.6-.5-1.1l2.8-2.6z" fill="#f7a01d"/>
-  <path d="M20.5 26.5c.8 1.6 2.6 2.3 4.2 2.5.7.1 1-.6.5-1.1l-2.8-2.6z" fill="#f7a01d"/>
-  <!-- body -->
-  <path d="M16 2.5c-4.6 0-7.4 3.4-7.4 8.4 0 2.1-.7 3.4-1.7 5C5.7 17.7 4.9 19.2 4.9 21.6 4.9 26.3 9.6 28.8 16 28.8s11.1-2.5 11.1-7.2c0-2.4-.8-3.9-2-5.7-1-1.6-1.7-2.9-1.7-5 0-5-2.8-8.4-7.4-8.4z" fill="#16181c"/>
-  <!-- belly -->
-  <path d="M16 10.6c-3.2 0-5.4 2.6-5.4 6.9 0 3.9 2.2 7 5.4 7s5.4-3.1 5.4-7c0-4.3-2.2-6.9-5.4-6.9z" fill="#fdfdfd"/>
-  <!-- white face -->
-  <ellipse cx="16" cy="8.8" rx="3.8" ry="3.4" fill="#fdfdfd"/>
-  <!-- eyes -->
-  <ellipse cx="14.1" cy="8.4" rx="0.95" ry="1.25" fill="#16181c"/>
-  <ellipse cx="17.9" cy="8.4" rx="0.95" ry="1.25" fill="#16181c"/>
-  <!-- beak -->
-  <path d="M14.4 10h3.2L16 12.4z" fill="#f7a01d"/>
+<svg width="236" height="236" viewBox="0 0 236 236" fill="none" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<radialGradient id="pg_body" cx="96" cy="70" r="130" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#4b5566"/><stop offset="0.5" stop-color="#232a35"/><stop offset="1" stop-color="#0d1117"/></radialGradient>
+<radialGradient id="pg_belly" cx="110" cy="120" r="70" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ffffff"/><stop offset="0.75" stop-color="#f1f3f6"/><stop offset="1" stop-color="#c9d0d9"/></radialGradient>
+<linearGradient id="pg_beak" x1="104" y1="84" x2="132" y2="104" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ffd36a"/><stop offset="1" stop-color="#f08a00"/></linearGradient>
+<linearGradient id="pg_foot" x1="0" y1="196" x2="0" y2="214" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ffc34d"/><stop offset="1" stop-color="#e27400"/></linearGradient>
+<radialGradient id="pg_eye" cx="0" cy="0" r="7" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#dfe6ee"/></radialGradient>
+<radialGradient id="pg_bloom" cx="84" cy="52" r="70" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="white" stop-opacity="0.4"/><stop offset="1" stop-color="white" stop-opacity="0"/></radialGradient>
+<filter id="pgshadow" x="-20" y="-20" width="276" height="276" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB"><feDropShadow dx="0" dy="5" stdDeviation="6" flood-color="#0d1424" flood-opacity="0.45"/></filter>
+<clipPath id="pgclip"><path d="M68 200c-10-24-4-66 8-104C84 64 98 34 118 34s34 30 42 62c12 38 18 80 8 104c-8 18-92 18-100 0z"/></clipPath>
+</defs>
+<g filter="url(#pgshadow)">
+<path d="M68 200c-10-24-4-66 8-104C84 64 98 34 118 34s34 30 42 62c12 38 18 80 8 104c-8 18-92 18-100 0z" fill="url(#pg_body)"/>
+<path d="M62 126c-18 14-26 38-22 52 10-6 20-20 28-36z" fill="#1a2029"/>
+<path d="M174 126c18 14 26 38 22 52-10-6-20-20-28-36z" fill="#1a2029"/>
+<path d="M84 120c0-26 14-42 34-42s34 16 34 42c0 34-10 70-34 76c-24-6-34-42-34-76z" fill="url(#pg_belly)"/>
+<ellipse cx="92" cy="204" rx="22" ry="9" fill="url(#pg_foot)"/>
+<ellipse cx="144" cy="204" rx="22" ry="9" fill="url(#pg_foot)"/>
+</g>
+<g transform="translate(102 70)"><circle r="9" fill="url(#pg_eye)"/><circle cx="2" cy="1" r="4.5" fill="#101418"/><circle cx="3.5" cy="-1" r="1.5" fill="#fff"/></g>
+<g transform="translate(134 70)"><circle r="9" fill="url(#pg_eye)"/><circle cx="-2" cy="1" r="4.5" fill="#101418"/><circle cx="-0.5" cy="-1" r="1.5" fill="#fff"/></g>
+<path d="M104 86c6-6 22-6 28 0-4 10-24 10-28 0z" fill="url(#pg_beak)"/>
+<path d="M106 88c8 3 16 3 24 0" stroke="#b25f00" stroke-width="1.6" stroke-linecap="round"/>
+<g clip-path="url(#pgclip)"><circle cx="96" cy="60" r="70" fill="url(#pg_bloom)"/></g>
 </svg>

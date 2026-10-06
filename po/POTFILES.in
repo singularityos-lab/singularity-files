@@ -5,3 +5,12 @@ src/file_ops_manager.vala
 src/main.vala
 src/portal_service.vala
 src/window.vala
+src/cloud_locations.vala
+src/cloud_mount_actions.vala
+src/folder_templates.vala
+src/new_folder_dialog.vala
+src/conflict_dialog.vala
+src/archive/archive_format.vala
+src/archive/archive_ops.vala
+src/archive/archive_dialogs.vala
+data/folder-templates.json.h

@@ -1,0 +1,9 @@
+[Plugin]
+Module=recent-documents
+Name=Recent Documents
+Description=Lists the last documents opened with an app in its dock menu.
+Authors=Singularity Team
+Copyright=Copyright © 2026 Singularity Team
+Website=https://sinty.dev
+Builtin=false
+X-Singularity-App=dev.sinty.files

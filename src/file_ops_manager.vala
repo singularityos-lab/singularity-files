@@ -8,6 +8,82 @@ namespace Singularity.Apps.Files {
         public int   files = 0;
     }
 
+    public enum ConflictChoice {
+        REPLACE,
+        KEEP_BOTH,
+        SKIP,
+        MERGE,
+        CANCEL
+    }
+
+    public class ConflictRequest : Object {
+        public FileOp op;
+        public GLib.File source;
+        public GLib.File target;
+        public FileInfo source_info;
+        public FileInfo target_info;
+        public string suggested_name;
+        public ConflictChoice choice = ConflictChoice.SKIP;
+        public bool apply_all = false;
+        public string? new_name = null;
+        internal SourceFunc? resume = null;
+
+        public bool both_folders {
+            get {
+                return source_info.get_file_type() == FileType.DIRECTORY
+                    && target_info.get_file_type() == FileType.DIRECTORY;
+            }
+        }
+
+        public void answer(ConflictChoice choice, bool apply_all, string? new_name = null) {
+            this.choice = choice;
+            this.apply_all = apply_all;
+            this.new_name = new_name;
+            if (resume != null) {
+                SourceFunc callback = (owned) resume;
+                resume = null;
+                Idle.add((owned) callback);
+            }
+        }
+    }
+
+    public class ArchivePasswordRequest : Object {
+        public string archive_name;
+        public bool retry;
+        private bool answered = false;
+        public signal void done(string? password);
+
+        public ArchivePasswordRequest(string archive_name, bool retry) {
+            this.archive_name = archive_name;
+            this.retry = retry;
+        }
+
+        public void answer(string? password) {
+            if (answered) return;
+            answered = true;
+            done(password);
+        }
+    }
+
+    public class ThreadGate {
+        private Mutex mutex = Mutex();
+        private Cond cond = Cond();
+        private bool opened = false;
+
+        public void open() {
+            mutex.lock();
+            opened = true;
+            cond.broadcast();
+            mutex.unlock();
+        }
+
+        public void wait() {
+            mutex.lock();
+            while (!opened) cond.wait(mutex);
+            mutex.unlock();
+        }
+    }
+
     public class FileOp : Object {
         public string id;
         public string display_name;   
@@ -20,6 +96,12 @@ namespace Singularity.Apps.Files {
         public bool   errored = false;
         public string? error_message = null;
         public Cancellable cancellable = new Cancellable();
+        public int file_policy = -1;
+        public int folder_policy = -1;
+        public int skipped = 0;
+        public bool waiting { get; set; default = false; }
+        public string kind = "transfer";
+        public string? result_path = null;
 
         // Explicit completion signal - more reliable than `notify["finished"]`
         // (which only fires when `finished` is a proper GObject property AND
@@ -43,6 +125,8 @@ namespace Singularity.Apps.Files {
      */
     public class FileOpsManager : Object {
         public signal void state_changed();
+        public signal void conflict(ConflictRequest request);
+        public signal void password_needed(ArchivePasswordRequest request);
 
         public Gee.ArrayList<FileOp> ops = new Gee.ArrayList<FileOp>();
         private DBusConnection? _conn = null;
@@ -107,6 +191,175 @@ namespace Singularity.Apps.Files {
             return op;
         }
 
+        public FileOp start_extract(Archives.ArchiveExtractor extractor, string display_name) {
+            var op = new FileOp();
+            op.id = "fop-%d".printf(++_id_counter);
+            op.kind = "extract";
+            op.display_name = display_name;
+            op.total_bytes = Archives.ArchiveReader.input_size(extractor.archive_path);
+            extractor.cancellable = op.cancellable;
+            string archive_name = Path.get_basename(extractor.archive_path);
+            extractor.set_resolver((entry, dest_path, out new_name) => {
+                return resolve_from_thread(op, entry, dest_path, out new_name);
+            });
+            extractor.set_password_provider((retry) => {
+                return password_from_thread(op, archive_name, retry);
+            });
+            ops.add(op);
+            state_changed();
+            emit_launcher_entry();
+            run_archive_job(op, () => {
+                extractor.run();
+                op.result_path = extractor.result_path;
+            }, () => {
+                op.done_bytes = extractor.done_bytes;
+                op.total_bytes = int64.max(extractor.total_bytes, 1);
+                op.skipped = extractor.skipped;
+            });
+            return op;
+        }
+
+        public FileOp start_create(Archives.ArchiveCreator creator) {
+            var op = new FileOp();
+            op.id = "fop-%d".printf(++_id_counter);
+            op.kind = "create";
+            op.display_name = _("Creating %s").printf(Path.get_basename(creator.output_path));
+            creator.cancellable = op.cancellable;
+            ops.add(op);
+            state_changed();
+            emit_launcher_entry();
+            run_archive_job(op, () => {
+                creator.run();
+                op.result_path = creator.outputs.length > 0 ? creator.outputs[0] : creator.output_path;
+            }, () => {
+                op.done_bytes = creator.done_bytes;
+                op.total_bytes = int64.max(creator.total_bytes, 1);
+            });
+            return op;
+        }
+
+        public delegate void ArchiveWork() throws Error;
+        public delegate void ArchivePoll();
+
+        private void run_archive_job(FileOp op, owned ArchiveWork work, owned ArchivePoll poll) {
+            bool running = true;
+            uint ticker = GLib.Timeout.add(100, () => {
+                poll();
+                schedule_emit();
+                state_changed();
+                return running ? GLib.Source.CONTINUE : GLib.Source.REMOVE;
+            });
+            new Thread<bool>("files-archive", () => {
+                Error? failure = null;
+                try {
+                    work();
+                } catch (Error e) {
+                    failure = e;
+                }
+                GLib.Idle.add(() => {
+                    running = false;
+                    GLib.Source.remove(ticker);
+                    poll();
+                    if (failure is IOError.CANCELLED) op.cancellable.cancel();
+                    if (failure != null && !(failure is IOError.CANCELLED)) {
+                        op.errored = true;
+                        op.error_message = failure.message;
+                    }
+                    finalize_op(op);
+                    return GLib.Source.REMOVE;
+                });
+                return true;
+            });
+        }
+
+        private Archives.ExtractChoice resolve_from_thread(FileOp op, Archives.ArchiveEntryInfo entry, string dest_path, out string? new_name) {
+            var gate = new ThreadGate();
+            ConflictRequest? answer = null;
+            GLib.Idle.add(() => {
+                var target = GLib.File.new_for_path(dest_path);
+                FileInfo target_info;
+                try {
+                    target_info = target.query_info(COMPARE_ATTRS, FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
+                } catch (Error e) {
+                    target_info = new FileInfo();
+                    target_info.set_name(target.get_basename());
+                    target_info.set_display_name(target.get_basename());
+                }
+                var src_info = new FileInfo();
+                string base_name = Path.get_basename(entry.path);
+                src_info.set_name(base_name);
+                src_info.set_display_name(base_name);
+                src_info.set_size(entry.size);
+                src_info.set_file_type(entry.is_dir ? FileType.DIRECTORY : FileType.REGULAR);
+                string ctype = entry.is_dir ? "inode/directory" : ContentType.guess(base_name, null, null);
+                src_info.set_content_type(ctype);
+                src_info.set_icon(ContentType.get_icon(ctype));
+                src_info.set_modification_date_time(new DateTime.from_unix_utc(entry.mtime));
+                var req = new ConflictRequest();
+                req.op = op;
+                req.source = GLib.File.new_for_path(Path.build_filename("/nonexistent-archive-entry", entry.path));
+                req.target = target;
+                req.source_info = src_info;
+                req.target_info = target_info;
+                var parent = target.get_parent();
+                req.suggested_name = parent != null ? unique_name(parent, target.get_basename()) : target.get_basename();
+                answer = req;
+                int policy = req.both_folders ? op.folder_policy : op.file_policy;
+                if (policy >= 0) {
+                    req.choice = (ConflictChoice) policy;
+                    gate.open();
+                    return GLib.Source.REMOVE;
+                }
+                op.waiting = true;
+                state_changed();
+                req.resume = () => {
+                    op.waiting = false;
+                    if (req.apply_all && req.choice != ConflictChoice.CANCEL) {
+                        if (req.both_folders) op.folder_policy = (int) req.choice;
+                        else op.file_policy = (int) req.choice;
+                    }
+                    state_changed();
+                    gate.open();
+                    return GLib.Source.REMOVE;
+                };
+                conflict(req);
+                return GLib.Source.REMOVE;
+            });
+            gate.wait();
+            new_name = answer.new_name;
+            switch (answer.choice) {
+                case ConflictChoice.REPLACE:
+                case ConflictChoice.MERGE:
+                    return Archives.ExtractChoice.REPLACE;
+                case ConflictChoice.KEEP_BOTH:
+                    return Archives.ExtractChoice.KEEP_BOTH;
+                case ConflictChoice.CANCEL:
+                    return Archives.ExtractChoice.CANCEL;
+                default:
+                    return Archives.ExtractChoice.SKIP;
+            }
+        }
+
+        private string? password_from_thread(FileOp op, string archive_name, bool retry) {
+            var gate = new ThreadGate();
+            string? result = null;
+            GLib.Idle.add(() => {
+                var req = new ArchivePasswordRequest(archive_name, retry);
+                op.waiting = true;
+                state_changed();
+                req.done.connect((pw) => {
+                    result = pw;
+                    op.waiting = false;
+                    state_changed();
+                    gate.open();
+                });
+                password_needed(req);
+                return GLib.Source.REMOVE;
+            });
+            gate.wait();
+            return result;
+        }
+
         // ── Async runners ─────────────────────────────────────────────────────
 
         private async void run_transfer(FileOp op, Gee.ArrayList<GLib.File> sources, GLib.File dest_folder) {
@@ -162,19 +415,169 @@ namespace Singularity.Apps.Files {
 
         // ── Recursive transfer ────────────────────────────────────────────────
 
-        private async void transfer_recursive(GLib.File src, GLib.File dst, FileOp op)
+        private const string COMPARE_ATTRS = "standard::type,standard::size,standard::name,standard::display-name,standard::icon,standard::content-type,time::modified,thumbnail::path";
+
+        public static string unique_name(GLib.File folder, string name) {
+            string stem = name;
+            string ext = "";
+            string lower = name.down();
+            foreach (string double_ext in new string[] { ".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst" }) {
+                if (lower.has_suffix(double_ext) && name.length > double_ext.length) {
+                    stem = name.substring(0, name.length - double_ext.length);
+                    ext = name.substring(name.length - double_ext.length);
+                    break;
+                }
+            }
+            if (ext == "") {
+                int dot = name.last_index_of(".");
+                if (dot > 0 && name.length - dot <= 6) {
+                    stem = name.substring(0, dot);
+                    ext = name.substring(dot);
+                }
+            }
+            int n = 2;
+            try {
+                var re = new Regex("^(.*) \\((\\d+)\\)$");
+                MatchInfo m;
+                if (re.match(stem, 0, out m)) {
+                    stem = m.fetch(1);
+                    n = int.parse(m.fetch(2)) + 1;
+                }
+            } catch (RegexError e) {
+            }
+            while (true) {
+                string candidate = "%s (%d)%s".printf(stem, n, ext);
+                if (!folder.get_child(candidate).query_exists()) return candidate;
+                n++;
+            }
+        }
+
+        private async ConflictRequest ask(FileOp op, GLib.File src, GLib.File dst, FileInfo src_info, FileInfo dst_info) {
+            var req = new ConflictRequest();
+            req.op = op;
+            req.source = src;
+            req.target = dst;
+            req.source_info = src_info;
+            req.target_info = dst_info;
+            var parent = dst.get_parent();
+            req.suggested_name = parent != null ? unique_name(parent, dst.get_basename()) : dst.get_basename();
+            int policy = req.both_folders ? op.folder_policy : op.file_policy;
+            if (policy >= 0) {
+                req.choice = (ConflictChoice) policy;
+                if (req.choice == ConflictChoice.MERGE && !req.both_folders) req.choice = ConflictChoice.REPLACE;
+                return req;
+            }
+            op.waiting = true;
+            state_changed();
+            req.resume = ask.callback;
+            conflict(req);
+            yield;
+            op.waiting = false;
+            state_changed();
+            if (req.apply_all && req.choice != ConflictChoice.CANCEL) {
+                if (req.both_folders) op.folder_policy = (int) req.choice;
+                else op.file_policy = (int) req.choice;
+            }
+            return req;
+        }
+
+        private async void remove_existing(GLib.File target, FileOp op) throws Error {
+            try {
+                yield target.trash_async(GLib.Priority.DEFAULT, op.cancellable);
+                return;
+            } catch (IOError e) {
+                if (e is IOError.CANCELLED) throw e;
+            }
+            yield delete_recursive(target, op.cancellable);
+        }
+
+        private async void delete_recursive(GLib.File target, Cancellable? cancel) throws Error {
+            var type = target.query_file_type(FileQueryInfoFlags.NOFOLLOW_SYMLINKS, cancel);
+            if (type == FileType.DIRECTORY) {
+                var en = yield target.enumerate_children_async("standard::name",
+                    FileQueryInfoFlags.NOFOLLOW_SYMLINKS, GLib.Priority.DEFAULT, cancel);
+                while (true) {
+                    var batch = yield en.next_files_async(50, GLib.Priority.DEFAULT, cancel);
+                    if (batch == null || batch.length() == 0) break;
+                    foreach (var ch in batch) yield delete_recursive(target.get_child(ch.get_name()), cancel);
+                }
+            }
+            yield target.delete_async(GLib.Priority.DEFAULT, cancel);
+        }
+
+        private async void skip_item(GLib.File src, FileInfo info, FileOp op) {
+            try {
+                var rep = yield compute_size(src, op.cancellable);
+                op.done_bytes += rep.bytes;
+                op.done_files += rep.files;
+            } catch (Error e) {
+                op.done_files++;
+            }
+            op.skipped++;
+            schedule_emit();
+            state_changed();
+        }
+
+        private async void transfer_recursive(GLib.File src, GLib.File dst_in, FileOp op)
                 throws Error {
             if (op.cancellable.is_cancelled()) return;
+            GLib.File dst = dst_in;
             var info = yield src.query_info_async(
-                "standard::type,standard::size,standard::name",
+                COMPARE_ATTRS,
                 FileQueryInfoFlags.NOFOLLOW_SYMLINKS,
                 GLib.Priority.DEFAULT, op.cancellable);
+
+            bool merging = false;
+            if (info.get_file_type() == FileType.DIRECTORY && (dst.equal(src) || dst.has_prefix(src))) {
+                if (op.is_move && dst.equal(src)) return;
+                if (!dst.equal(src)) throw new IOError.INVALID_ARGUMENT(_("A folder cannot be copied into itself."));
+            }
+            if (src.equal(dst)) {
+                if (op.is_move) return;
+                var parent = dst.get_parent();
+                if (parent != null) dst = parent.get_child(unique_name(parent, dst.get_basename()));
+            } else {
+                FileInfo? existing = null;
+                try {
+                    existing = yield dst.query_info_async(COMPARE_ATTRS,
+                        FileQueryInfoFlags.NOFOLLOW_SYMLINKS, GLib.Priority.DEFAULT, op.cancellable);
+                } catch (IOError e) {
+                    if (!(e is IOError.NOT_FOUND)) throw e;
+                }
+                if (existing != null) {
+                    var req = yield ask(op, src, dst, info, existing);
+                    switch (req.choice) {
+                        case ConflictChoice.CANCEL:
+                            op.cancellable.cancel();
+                            return;
+                        case ConflictChoice.SKIP:
+                            yield skip_item(src, info, op);
+                            return;
+                        case ConflictChoice.KEEP_BOTH:
+                            var parent = dst.get_parent();
+                            string name = req.new_name != null && req.new_name.strip() != "" ? req.new_name.strip() : req.suggested_name;
+                            if (parent != null) dst = parent.get_child(name);
+                            if (dst.query_exists() && parent != null) dst = parent.get_child(unique_name(parent, name));
+                            break;
+                        case ConflictChoice.MERGE:
+                            if (req.both_folders) {
+                                merging = true;
+                                break;
+                            }
+                            yield remove_existing(dst, op);
+                            break;
+                        default:
+                            yield remove_existing(dst, op);
+                            break;
+                    }
+                }
+            }
 
             // If we're moving and src and dst are on the same filesystem,
             // GFile.move_async will use rename() under the hood - instant.
             // We attempt this for ALL items (file or directory) first; on
             // EXDEV (cross-device) we fall back to copy + delete.
-            if (op.is_move) {
+            if (op.is_move && !merging) {
                 try {
                     int64 before = op.done_bytes;
                     yield src.move_async(dst,

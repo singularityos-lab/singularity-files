@@ -11,24 +11,17 @@ namespace Singularity.Apps {
 
         public ConnectToServerDialog(Gtk.Application app) {
             base(app, true);
-        }
-
-        construct {
-            set_default_size(420, -1);
+            set_title(_("Connect to Server"));
+            set_default_size(440, -1);
             resizable = false;
 
-            var box = new Gtk.Box(Gtk.Orientation.VERTICAL, 16);
-            box.margin_top = 24;
-            box.margin_bottom = 24;
+            var box = new Gtk.Box(Gtk.Orientation.VERTICAL, 12);
+            box.margin_top = 6;
+            box.margin_bottom = 16;
             box.margin_start = 24;
             box.margin_end = 24;
 
-            var title_lbl = new Gtk.Label(_("New Connection"));
-            title_lbl.add_css_class("title-3");
-            title_lbl.xalign = 0f;
-            box.append(title_lbl);
-
-            var desc_lbl = new Gtk.Label("Enter a server address to connect (e.g. sftp://user@host, ftp://host)");
+            var desc_lbl = new Gtk.Label(_("Enter an address such as sftp://user@host"));
             desc_lbl.wrap = true;
             desc_lbl.xalign = 0f;
             desc_lbl.add_css_class("dim-label");
@@ -45,6 +38,7 @@ namespace Singularity.Apps {
 
             var cancel_btn = new Gtk.Button.with_label(_("Cancel"));
             cancel_btn.clicked.connect(() => { close(); });
+            set_cancel_button(cancel_btn);
 
             var connect_btn = new Gtk.Button.with_label(_("Connect"));
             connect_btn.add_css_class("suggested-action");

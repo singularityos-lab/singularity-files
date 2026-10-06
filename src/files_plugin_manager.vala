@@ -10,6 +10,8 @@ namespace Singularity.Apps {
         private Singularity.FilesPluginContext context;
         private Gee.ArrayList<Singularity.FileIconProvider> icon_providers
             = new Gee.ArrayList<Singularity.FileIconProvider>();
+        private Gee.ArrayList<Singularity.FileAction> file_actions
+            = new Gee.ArrayList<Singularity.FileAction>();
         private Gee.HashMap<string, Singularity.FilesPlugin> loaded
             = new Gee.HashMap<string, Singularity.FilesPlugin>();
 
@@ -26,6 +28,14 @@ namespace Singularity.Apps {
             context.file_icon_provider_removed.connect((p) => {
                 icon_providers.remove(p);
             });
+            context.file_action_added.connect((a) => {
+                if (!file_actions.contains(a)) file_actions.add(a);
+            });
+            context.file_action_removed.connect((a) => {
+                file_actions.remove(a);
+            });
+            foreach (var action in Singularity.FileActionRegistry.load_declarative())
+                file_actions.add(action);
 
             var src = GLib.SettingsSchemaSource.get_default();
             if (src != null && src.lookup("dev.sinty.desktop", true) != null) {
@@ -61,19 +71,13 @@ namespace Singularity.Apps {
 
             engine.rescan_plugins();
 
-            string[] enabled = (settings != null)
-                ? settings.get_strv("enabled-plugins") : new string[0];
-
             var model = (GLib.ListModel) engine;
             uint n = model.get_n_items();
             for (uint i = 0; i < n; i++) {
                 var info = (Peas.PluginInfo) model.get_item(i);
                 string module = info.get_module_name();
-                bool want = false;
-                foreach (string s in enabled) {
-                    if (s == module) { want = true; break; }
-                }
-                if (!want) continue;
+                if (settings == null || !Singularity.PluginPreferences.is_enabled(settings, info)) continue;
+                Singularity.PluginPreferences.bind_translations(info);
                 try {
                     if (!info.is_loaded()) engine.load_plugin(info);
                     string[] names = {};
@@ -93,6 +97,14 @@ namespace Singularity.Apps {
 
         public bool has_icon_providers() {
             return icon_providers.size > 0;
+        }
+
+        public Singularity.FileAction[] actions_for(GLib.File[] files, string?[] content_types) {
+            Singularity.FileAction[] matching = {};
+            foreach (var action in file_actions) {
+                if (action.matches_all(files, content_types)) matching += action;
+            }
+            return matching;
         }
 
         public Singularity.FileIconProvider? provider_for(GLib.File file, string? content_type) {

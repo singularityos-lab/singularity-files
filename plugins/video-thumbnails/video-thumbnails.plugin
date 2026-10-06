@@ -1,0 +1,9 @@
+[Plugin]
+Module=video-thumbnails
+Name=Video Thumbnails
+Description=Shows a frame of each video as its icon in Files.
+Authors=Singularity Team
+Copyright=Copyright © 2026 Singularity Team
+Website=https://sinty.dev
+Builtin=false
+X-Singularity-App=dev.sinty.files

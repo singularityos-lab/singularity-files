@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "templates": [
+    {
+      "id": "project",
+      "name": "Project",
+      "summary": "docs, src and assets folders with a README",
+      "icon": "folder-development",
+      "folder-name": "Project",
+      "entries": [
+        { "path": "docs/" },
+        { "path": "src/" },
+        { "path": "assets/" },
+        { "path": "README.md", "content": "# {{name}}\n\nStarted on {{date}}.\n\n## Layout\n\n- `docs` for notes and documentation\n- `src` for the source files\n- `assets` for images, fonts and other media\n" }
+      ]
+    },
+    {
+      "id": "photo-shoot",
+      "name": "Photo Shoot",
+      "summary": "Raw, Edited and Export folders",
+      "icon": "folder-pictures",
+      "folder-name": "Photo Shoot",
+      "entries": [
+        { "path": "Raw/" },
+        { "path": "Edited/" },
+        { "path": "Export/" }
+      ]
+    },
+    {
+      "id": "invoices",
+      "name": "Invoices and Receipts",
+      "summary": "A folder for this year with one per month, 01 to 12",
+      "icon": "folder-invoices",
+      "folder-name": "Invoices and Receipts",
+      "entries": [
+        { "path": "{{year}}/01/" },
+        { "path": "{{year}}/02/" },
+        { "path": "{{year}}/03/" },
+        { "path": "{{year}}/04/" },
+        { "path": "{{year}}/05/" },
+        { "path": "{{year}}/06/" },
+        { "path": "{{year}}/07/" },
+        { "path": "{{year}}/08/" },
+        { "path": "{{year}}/09/" },
+        { "path": "{{year}}/10/" },
+        { "path": "{{year}}/11/" },
+        { "path": "{{year}}/12/" }
+      ]
+    },
+    {
+      "id": "course",
+      "name": "Course",
+      "summary": "Lectures, Assignments and Notes folders",
+      "icon": "folder-education",
+      "folder-name": "Course",
+      "entries": [
+        { "path": "Lectures/" },
+        { "path": "Assignments/" },
+        { "path": "Notes/" }
+      ]
+    },
+    {
+      "id": "music",
+      "name": "Music Project",
+      "summary": "Songs, Demos, Recordings, Mixes, Masters, Artwork",
+      "icon": "folder-music",
+      "folder-name": "Music Project",
+      "entries": [
+        { "path": "Songs/" },
+        { "path": "Demos/" },
+        { "path": "Recordings/" },
+        { "path": "Mixes/" },
+        { "path": "Masters/" },
+        { "path": "Artwork/" },
+        { "path": "Songs/Lyrics.md", "content": "# {{name}}\n\nLyrics and chords, started on {{date}}.\n" }
+      ]
+    },
+    {
+      "id": "website",
+      "name": "Website",
+      "summary": "css, js and img folders with an index.html",
+      "icon": "folder-website",
+      "folder-name": "Website",
+      "entries": [
+        { "path": "css/style.css", "content": "body {\n    margin: 0 auto;\n    max-width: 48rem;\n    padding: 2rem;\n    font-family: system-ui, sans-serif;\n}\n" },
+        { "path": "js/main.js", "content": "" },
+        { "path": "img/" },
+        { "path": "index.html", "content": "<!doctype html>\n<html lang=\"en\">\n<head>\n    <meta charset=\"utf-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n    <title>{{name}}</title>\n    <link rel=\"stylesheet\" href=\"css/style.css\">\n</head>\n<body>\n    <h1>{{name}}</h1>\n    <p>&copy; {{year}}</p>\n    <script src=\"js/main.js\"></script>\n</body>\n</html>\n" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+[Plugin]
+Module=places-dock
+Name=Places in the Dock
+Description=Lists Home, Documents, Downloads and your bookmarks in the dock menu of Files.
+Authors=Singularity Team
+Copyright=Copyright © 2026 Singularity Team
+Website=https://sinty.dev
+Builtin=false
+X-Singularity-App=dev.sinty.files
