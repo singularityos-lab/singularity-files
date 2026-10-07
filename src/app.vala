@@ -2620,6 +2620,25 @@ namespace Singularity.Apps {
             return Files.Archives.ArchiveFormats.is_archive_type(ctype);
         }
 
+        private static bool is_disk_image(string? ctype, File file) {
+            string name = file.get_basename().down();
+            if (name.has_suffix(".iso") || name.has_suffix(".img") || name.has_suffix(".img.xz")) return true;
+            if (ctype == null) return false;
+            return ctype == "application/x-cd-image" || ctype == "application/x-raw-disk-image"
+                || ctype == "application/x-raw-disk-image-xz-compressed" || ctype == "application/vnd.efi.iso"
+                || ctype == "application/vnd.efi.img";
+        }
+
+        private static void launch_with(GLib.AppInfo app, File file) {
+            var files = new GLib.List<File>();
+            files.append(file);
+            try {
+                app.launch(files, Gdk.Display.get_default().get_app_launch_context());
+            } catch (Error e) {
+                warning("Launch %s failed: %s", app.get_id(), e.message);
+            }
+        }
+
         private static bool is_image_file(FileItem item) {
             string? ctype = item.info.get_content_type();
             return ctype != null && ctype.has_prefix("image/");
@@ -2927,6 +2946,21 @@ namespace Singularity.Apps {
                         menu.add_item(_("Extract To…"), "folder-download-symbolic", () => {
                             extract_archive_to(widget, item);
                         });
+                        menu.add_separator();
+                    }
+                    if (is_disk_image(item_ctype, item.file)) {
+                        var writer = new GLib.DesktopAppInfo("dev.sinty.drivewriter.desktop");
+                        if (writer != null) {
+                            menu.add_item(_("Write to USB Drive…"), "drive-removable-media-symbolic", () => {
+                                launch_with(writer, item.file);
+                            });
+                        }
+                        var machines = new GLib.DesktopAppInfo("dev.sinty.machines.desktop");
+                        if (machines != null) {
+                            menu.add_item(_("Try in a Virtual Machine"), "computer-symbolic", () => {
+                                launch_with(machines, item.file);
+                            });
+                        }
                         menu.add_separator();
                     }
                     menu.add_item(_("Open With…"), "preferences-other-symbolic", () => {
@@ -3663,6 +3697,50 @@ namespace Singularity.Apps {
             disks_btn.clicked.connect(show_disks_page);
             _disks_sidebar_btn = disks_btn;
             _devices_section.append(disks_btn);
+            append_nearby_devices();
+        }
+
+        private bool _nearby_watched = false;
+
+        private void append_nearby_devices() {
+            var nearby = Singularity.NearbyClient.get_default();
+            if (!_nearby_watched) {
+                _nearby_watched = true;
+                nearby.changed.connect(() => rebuild_devices_section());
+                nearby.start();
+            }
+            foreach (var device in nearby.usable_devices()) {
+                string id = device.id;
+                string name = device.name;
+                var btn = new Button();
+                btn.add_css_class("flat");
+                btn.tooltip_text = _("Drop files here to send them to %s").printf(name);
+                var row = new Box(Orientation.HORIZONTAL, 8);
+                var img = new Image.from_icon_name(device.icon_name);
+                img.pixel_size = 16;
+                row.append(img);
+                row.append(new Label(name));
+                btn.set_child(row);
+                btn.clicked.connect(() => show_toast(_("Drop files on %s to send them").printf(name)));
+                var drop = new DropTarget(typeof(Gdk.FileList), Gdk.DragAction.COPY);
+                drop.drop.connect((value, x, y) => {
+                    var list = (Gdk.FileList) value.get_boxed();
+                    File[] files = {};
+                    foreach (var f in list.get_files()) files += f;
+                    if (files.length == 0) return false;
+                    nearby.share_files.begin(id, files, (o, r) => {
+                        try {
+                            nearby.share_files.end(r);
+                            show_toast(ngettext("Sending %d file to %s", "Sending %d files to %s", files.length).printf(files.length, name));
+                        } catch (Error e) {
+                            show_toast(_("Could not send to %s: %s").printf(name, e.message));
+                        }
+                    });
+                    return true;
+                });
+                btn.add_controller(drop);
+                _devices_section.append(btn);
+            }
         }
 
         private void rebuild_picker_devices_section() {
