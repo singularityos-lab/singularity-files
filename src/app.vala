@@ -30,6 +30,7 @@ namespace Singularity.Apps {
         public bool directory_mode = false;
         private string? picker_current_name = null;
         private string? picker_accept_label = null;
+        private string? portal_parent = null;
         public bool portal_mode = false;
         public bool multiple_mode = false;
         private Stack? view_stack_ref = null;
@@ -768,6 +769,7 @@ namespace Singularity.Apps {
                     if (folder.query_exists(null)) _startup_folder = folder;
                 }
                 else if (args[i].has_prefix("--accept-label=")) picker_accept_label = args[i].substring(15);
+                else if (args[i].has_prefix("--parent=")) portal_parent = args[i].substring(9);
                 else if (i > 0 && !args[i].has_prefix("--")) {
                     // Positional argument: a folder to open. Accept a path or
                     // a file:// URI; relative paths resolve against the CWD
@@ -1465,6 +1467,14 @@ namespace Singularity.Apps {
             }
 
             window.present();
+            if (portal_mode) {
+                var toplevel = window.get_surface() as Gdk.Wayland.Toplevel;
+                if (toplevel != null) {
+                    toplevel.set_application_id("dev.sinty.files");
+                    if (portal_parent != null && portal_parent.has_prefix("wayland:"))
+                        toplevel.set_transient_for_exported(portal_parent.substring(8));
+                }
+            }
             if (picker_mode && save_mode && filename_entry != null) {
                 filename_entry.grab_focus();
             }

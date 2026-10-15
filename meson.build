@@ -68,6 +68,7 @@ executable('singularity-files',
     dependency('json-glib-1.0'),
     libarchive_dep,
     posix_dep,
+    dependency('gtk4-wayland'),
   ],
   install: true
 )
