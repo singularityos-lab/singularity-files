@@ -1595,6 +1595,8 @@ namespace Singularity.Apps {
                 var list_item = (ListItem)item;
                 var label = new Label("");
                 label.halign = Align.START;
+                label.margin_start = 12;
+                label.ellipsize = Pango.EllipsizeMode.END;
                 label.add_css_class("dim-label");
                 list_item.set_child(label);
             });
@@ -4451,7 +4453,49 @@ namespace Singularity.Apps {
             }
         }
 
+        private class ThumbJob {
+            public string source_path;
+            public string file_path;
+            public string key;
+            public int px;
+            public Image img;
+            public Spinner? spinner;
+            public string? content_type;
+            public GLib.Icon? fallback;
+            public bool compact;
+        }
+
+        private const int THUMB_CACHE_SIZE = 400;
+        private ThreadPool<ThumbJob>? thumb_pool = null;
+        private Gee.HashMap<string, Gdk.Paintable> thumb_cache = new Gee.HashMap<string, Gdk.Paintable>();
+        private Gee.LinkedList<string> thumb_order = new Gee.LinkedList<string>();
+        private Mutex thumb_lock = Mutex();
+        private Gee.HashMap<string, int> thumb_wanted = new Gee.HashMap<string, int>();
+
+        private void thumb_want(string path, int delta) {
+            thumb_lock.lock();
+            int n = thumb_wanted.has_key(path) ? thumb_wanted[path] + delta : delta;
+            if (n > 0) thumb_wanted[path] = n;
+            else thumb_wanted.unset(path);
+            thumb_lock.unlock();
+        }
+
+        private bool thumb_is_wanted(string path) {
+            thumb_lock.lock();
+            bool wanted = thumb_wanted.has_key(path);
+            thumb_lock.unlock();
+            return wanted;
+        }
+
+        private void thumb_remember(string key, Gdk.Paintable paintable) {
+            if (!thumb_cache.has_key(key)) thumb_order.add(key);
+            thumb_cache[key] = paintable;
+            while (thumb_order.size > THUMB_CACHE_SIZE) thumb_cache.unset(thumb_order.poll_head());
+        }
+
         private void bind_thumbnail(Image img, Spinner? spinner, FileItem file_item, int size, bool compact) {
+            string? previous = img.get_data<string>("thumb-for-path");
+            if (previous != null && previous != "") thumb_want(previous, -1);
             img.set_data<string>("thumb-for-path", "");
             img.set_from_gicon(file_item.info.get_icon());
             if (spinner != null) {
@@ -4478,34 +4522,76 @@ namespace Singularity.Apps {
                 spinner.spinning = true;
                 spinner.visible = true;
             }
-            load_thumbnail_async(img, spinner, cached ?? fpath, fpath, size, content_type, file_item.info.get_icon(), compact);
+            var modified = file_item.info.get_modification_date_time();
+            string stamp = modified != null ? modified.to_unix().to_string() : "0";
+            thumb_want(fpath, 1);
+            load_thumbnail_async(img, spinner, cached ?? fpath, fpath, size, content_type, file_item.info.get_icon(), compact, stamp);
         }
 
         private void load_thumbnail_async(Image img, Spinner? spinner, string source_path, string file_path,
-                                          int size, string? content_type, GLib.Icon? fallback, bool compact) {
+                                          int size, string? content_type, GLib.Icon? fallback, bool compact, string stamp) {
             int px = int.min(512, int.max(48, size * 2));
-            new GLib.Thread<void>("thumb", () => {
-                Gdk.Texture? texture = null;
+            string key = "%s\n%s\n%d\n%s".printf(file_path, stamp, px, compact ? "c" : "f");
+            var hit = thumb_cache[key];
+            if (hit != null) {
+                img.set_from_paintable(hit);
+                if (spinner != null) {
+                    spinner.spinning = false;
+                    spinner.visible = false;
+                }
+                return;
+            }
+            if (thumb_pool == null) {
                 try {
-                    var pb = new Gdk.Pixbuf.from_file_at_scale(source_path, px, px, true);
-                    pb = pb.apply_embedded_orientation() ?? pb;
-                    var format = pb.has_alpha ? Gdk.MemoryFormat.R8G8B8A8 : Gdk.MemoryFormat.R8G8B8;
-                    texture = new Gdk.MemoryTexture(pb.width, pb.height, format, pb.read_pixel_bytes(), pb.rowstride);
-                } catch (Error e) {}
-                GLib.Idle.add(() => {
-                    string? expected = img.get_data<string>("thumb-for-path");
-                    if (expected != null && expected == file_path) {
-                        if (texture != null)
-                            img.set_from_paintable(Files.ThumbnailFrame.decorate(texture, content_type, file_path, compact));
-                        else
-                            img.set_from_gicon(fallback ?? new ThemedIcon("image-x-generic"));
-                        if (spinner != null) {
-                            spinner.spinning = false;
-                            spinner.visible = false;
-                        }
+                    thumb_pool = new ThreadPool<ThumbJob>.with_owned_data((job) => decode_thumbnail(job), 2, false);
+                } catch (ThreadError e) {
+                    return;
+                }
+            }
+            var job = new ThumbJob();
+            job.source_path = source_path;
+            job.file_path = file_path;
+            job.key = key;
+            job.px = px;
+            job.img = img;
+            job.spinner = spinner;
+            job.content_type = content_type;
+            job.fallback = fallback;
+            job.compact = compact;
+            try {
+                thumb_pool.add((owned) job);
+            } catch (ThreadError e) {
+            }
+        }
+
+        private void decode_thumbnail(owned ThumbJob job) {
+            Posix.setpriority(Posix.PRIO_PROCESS, 0, 10);
+            if (!thumb_is_wanted(job.file_path)) return;
+            Gdk.Texture? texture = null;
+            try {
+                var pb = new Gdk.Pixbuf.from_file_at_scale(job.source_path, job.px, job.px, true);
+                pb = pb.apply_embedded_orientation() ?? pb;
+                var format = pb.has_alpha ? Gdk.MemoryFormat.R8G8B8A8 : Gdk.MemoryFormat.R8G8B8;
+                texture = new Gdk.MemoryTexture(pb.width, pb.height, format, pb.read_pixel_bytes(), pb.rowstride);
+            } catch (Error e) {}
+            GLib.Idle.add(() => {
+                Gdk.Paintable? paintable = null;
+                if (texture != null) {
+                    paintable = Files.ThumbnailFrame.decorate(texture, job.content_type, job.file_path, job.compact);
+                    thumb_remember(job.key, paintable);
+                }
+                string? expected = job.img.get_data<string>("thumb-for-path");
+                if (expected != null && expected == job.file_path) {
+                    if (paintable != null)
+                        job.img.set_from_paintable(paintable);
+                    else
+                        job.img.set_from_gicon(job.fallback ?? new ThemedIcon("image-x-generic"));
+                    if (job.spinner != null) {
+                        job.spinner.spinning = false;
+                        job.spinner.visible = false;
                     }
-                    return GLib.Source.REMOVE;
-                });
+                }
+                return GLib.Source.REMOVE;
             });
         }
 
