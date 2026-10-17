@@ -4914,14 +4914,12 @@ namespace Singularity.Apps {
         private string icon_name_from_gicon(GLib.Icon? gi, string fallback) {
             if (gi is GLib.ThemedIcon) {
                 var names = ((GLib.ThemedIcon) gi).get_names();
+                var theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default());
                 foreach (var n in names) {
-                    if (!n.has_suffix("-symbolic")) return n;
+                    if (!n.has_suffix("-symbolic") && theme.has_icon(n)) return n;
                 }
-                if (names.length > 0) {
-                    string n = names[0];
-                    if (n.has_suffix("-symbolic"))
-                        return n.substring(0, n.length - "-symbolic".length);
-                    return n;
+                foreach (var n in names) {
+                    if (theme.has_icon(n)) return n;
                 }
             }
             return fallback;
@@ -4996,7 +4994,7 @@ namespace Singularity.Apps {
             if (empty_trash_btn != null) empty_trash_btn.visible = false;
             mark_disks_sidebar_active();
 
-            add_disk_card(_disks_page_box, "File System", "/", "drive-harddisk");
+            add_disk_card(_disks_page_box, "File System", "/", "drive-harddisk", Environment.get_home_dir());
             // ush integration: Linux files as a disk.
             string? ush_disk = ush_linux_home();
             if (ush_disk != null) {
@@ -5018,7 +5016,7 @@ namespace Singularity.Apps {
             view_stack_ref.visible_child_name = "disks";
         }
 
-        private void add_disk_card(FlowBox box, string name, string path, string icon) {
+        private void add_disk_card(FlowBox box, string name, string path, string icon, string? usage_path = null) {
             // Fixed-size card button: 160×170 px
             var btn = new Button();
             btn.has_frame = true;
@@ -5070,7 +5068,7 @@ namespace Singularity.Apps {
             box.append(fbi);
 
             // Async: query used/total
-            var disk_file = GLib.File.new_for_path(path);
+            var disk_file = GLib.File.new_for_path(usage_path ?? path);
             disk_file.query_filesystem_info_async.begin(
                 "filesystem::size,filesystem::free", Priority.LOW, null, (obj2, res2) => {
                     try {
