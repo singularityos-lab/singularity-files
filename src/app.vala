@@ -4992,6 +4992,7 @@ namespace Singularity.Apps {
             current_folder = null;
             update_menu_actions();
             if (empty_trash_btn != null) empty_trash_btn.visible = false;
+            if (_file_count_lbl != null) _file_count_lbl.label = "";
             mark_disks_sidebar_active();
 
             add_disk_card(_disks_page_box, "File System", "/", "drive-harddisk", Environment.get_home_dir());
