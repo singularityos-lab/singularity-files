@@ -1946,10 +1946,13 @@ namespace Singularity.Apps {
             public abstract void untrust_dir (string path) throws Error;
             public abstract bool is_dir_trusted (string path) throws Error;
             public abstract string list_dev_dirs () throws Error;
+            public abstract void trust_dev_dir (string path) throws Error;
+            public abstract void untrust_dev_dir (string path) throws Error;
+            public abstract bool is_dev_dir_trusted (string path) throws Error;
         }
 
         // host paths shared with Linux, read straight from the broker policy file.
-        private string[] ush_list_shared_dirs() {
+        private string[] ush_list_shared_dirs(bool dev) {
             string path = Path.build_filename(Environment.get_home_dir(),
                 ".local", "share", "ush", "policy.json");
             string[] result = {};
@@ -1963,7 +1966,8 @@ namespace Singularity.Apps {
                 for (uint i = 0; i < arr.get_length(); i++) {
                     var obj = arr.get_object_element(i);
                     if (obj == null) continue;
-                    if (obj.get_string_member_with_default("category", "") != "devdir") continue;
+                    string category = obj.get_string_member_with_default("category", "");
+                    if (category != "devdir" && !(dev && category == "devdir-dev")) continue;
                     if (obj.get_string_member_with_default("decision", "") != "allow") continue;
                     string res = obj.get_string_member_with_default("resource", "");
                     if (res != "") result += res;
@@ -2026,6 +2030,37 @@ namespace Singularity.Apps {
             } catch (Error e) {
                 return false;
             }
+        }
+
+        private bool ush_is_dev_dir_trusted(string path) {
+            var b = ush_broker_proxy();
+            if (b == null) return false;
+            try {
+                return b.is_dev_dir_trusted(path);
+            } catch (Error e) {
+                return false;
+            }
+        }
+
+        private void ush_set_dev_dir_shared(string path, bool shared) {
+            var b = ush_broker_proxy();
+            if (b == null) {
+                warning("ush: broker unavailable; is ush-broker running?");
+                return;
+            }
+            try {
+                if (shared) b.trust_dev_dir(path);
+                else b.untrust_dev_dir(path);
+            } catch (Error e) {
+                warning("ush: developer share toggle failed: %s", e.message);
+                return;
+            }
+            var notif = new Notification(shared ? _("Shared with the developer shell") : _("Stopped sharing with the developer shell"));
+            notif.set_body(shared
+                ? _("The dsh shell can now read and write %s.").printf(path)
+                : _("The dsh shell will no longer access %s.").printf(path));
+            notif.set_icon(new ThemedIcon("applications-engineering"));
+            this.send_notification("ush-dev-share", notif);
         }
 
         private void ush_set_dir_shared(string path, bool shared) {
@@ -3066,6 +3101,17 @@ namespace Singularity.Apps {
                     menu.add_item("Share with Linux", "drive-harddisk-symbolic", () => {
                         ush_set_dir_shared(share_path, true);
                     });
+                }
+                if (ush_dev_home() != null) {
+                    if (ush_is_dev_dir_trusted(share_path)) {
+                        menu.add_item("Stop sharing with the developer shell", "applications-engineering-symbolic", () => {
+                            ush_set_dev_dir_shared(share_path, false);
+                        });
+                    } else {
+                        menu.add_item("Share with the developer shell", "applications-engineering-symbolic", () => {
+                            ush_set_dev_dir_shared(share_path, true);
+                        });
+                    }
                 }
             }
 
@@ -4693,8 +4739,11 @@ namespace Singularity.Apps {
                 // ush integration: in Linux files, show the folders shared with
                 // Linux at their real host path, replacing any same-named guest one.
                 string? lh = ush_linux_home();
-                if (lh != null && folder.get_path() == lh) {
-                    var shared = ush_list_shared_dirs();
+                string? dh = ush_dev_home();
+                bool in_linux = lh != null && folder.get_path() == lh;
+                bool in_dev = dh != null && folder.get_path() == dh;
+                if (in_linux || in_dev) {
+                    var shared = ush_list_shared_dirs(in_dev);
                     if (shared.length > 0) {
                         var names = new GenericArray<string>();
                         foreach (string sp in shared) names.add(File.new_for_path(sp).get_basename());
