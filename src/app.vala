@@ -1940,7 +1940,7 @@ namespace Singularity.Apps {
 
         // ush integration: host-only broker interface (the guest can't reach the
         // session bus). trust_dir/untrust_dir back "Share with Linux".
-        [DBus (name = "io.github.singularityos_lab.ush.Broker1")]
+        [DBus (name = "dev.sinty.ush.Broker1")]
         private interface UshBroker : Object {
             public abstract void trust_dir (string path) throws Error;
             public abstract void untrust_dir (string path) throws Error;
@@ -2014,8 +2014,8 @@ namespace Singularity.Apps {
         private UshBroker? ush_broker_proxy() {
             try {
                 return Bus.get_proxy_sync<UshBroker>(BusType.SESSION,
-                    "io.github.singularityos_lab.ush.Broker",
-                    "/io/github/singularityos_lab/ush/Broker");
+                    "dev.sinty.ush.Broker",
+                    "/dev/sinty/ush/Broker");
             } catch (Error e) {
                 warning("ush: broker proxy failed: %s", e.message);
                 return null;
