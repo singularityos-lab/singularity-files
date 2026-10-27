@@ -4663,7 +4663,8 @@ namespace Singularity.Apps {
             try {
                 var pb = new Gdk.Pixbuf.from_file_at_scale(source_path, px, px, true);
                 pb = pb.apply_embedded_orientation() ?? pb;
-                unowned uint8[] data = pb.read_pixel_bytes().get_data();
+                var pixels = pb.read_pixel_bytes();
+                unowned uint8[] data = pixels.get_data();
                 uint32 header[4] = { pb.width, pb.height, pb.rowstride, pb.has_alpha ? 1 : 0 };
                 var packed = new uint8[16 + data.length];
                 Memory.copy(packed, header, 16);
