@@ -4527,6 +4527,7 @@ namespace Singularity.Apps {
         private Gee.LinkedList<string> thumb_order = new Gee.LinkedList<string>();
         private Mutex thumb_lock = Mutex();
         private Gee.HashMap<string, int> thumb_wanted = new Gee.HashMap<string, int>();
+        private Singularity.Compute? thumb_compute = null;
 
         private void thumb_want(string path, int delta) {
             thumb_lock.lock();
@@ -4624,12 +4625,19 @@ namespace Singularity.Apps {
             Posix.setpriority(Posix.PRIO_PROCESS, 0, 10);
             if (!thumb_is_wanted(job.file_path)) return;
             Gdk.Texture? texture = null;
-            try {
-                var pb = new Gdk.Pixbuf.from_file_at_scale(job.source_path, job.px, job.px, true);
-                pb = pb.apply_embedded_orientation() ?? pb;
-                var format = pb.has_alpha ? Gdk.MemoryFormat.R8G8B8A8 : Gdk.MemoryFormat.R8G8B8;
-                texture = new Gdk.MemoryTexture(pb.width, pb.height, format, pb.read_pixel_bytes(), pb.rowstride);
-            } catch (Error e) {}
+            thumb_lock.lock();
+            if (thumb_compute == null) thumb_compute = new Singularity.Compute();
+            thumb_lock.unlock();
+            uint8[] packed = thumb_compute.call(2, Singularity.Compute.key("files-thumbnail", (job.key + "\n" + job.source_path).data), () => {
+                return pack_thumbnail(job.source_path, job.px);
+            });
+            if (packed.length > 16) {
+                uint32 header[4];
+                Memory.copy(header, packed, 16);
+                var pixels = new Bytes(packed[16:packed.length]);
+                var format = header[3] != 0 ? Gdk.MemoryFormat.R8G8B8A8 : Gdk.MemoryFormat.R8G8B8;
+                texture = new Gdk.MemoryTexture((int) header[0], (int) header[1], format, pixels, header[2]);
+            }
             GLib.Idle.add(() => {
                 Gdk.Paintable? paintable = null;
                 if (texture != null) {
@@ -4649,6 +4657,21 @@ namespace Singularity.Apps {
                 }
                 return GLib.Source.REMOVE;
             });
+        }
+
+        private static uint8[] pack_thumbnail(string source_path, int px) {
+            try {
+                var pb = new Gdk.Pixbuf.from_file_at_scale(source_path, px, px, true);
+                pb = pb.apply_embedded_orientation() ?? pb;
+                unowned uint8[] data = pb.read_pixel_bytes().get_data();
+                uint32 header[4] = { pb.width, pb.height, pb.rowstride, pb.has_alpha ? 1 : 0 };
+                var packed = new uint8[16 + data.length];
+                Memory.copy(packed, header, 16);
+                Memory.copy(&packed[16], data, data.length);
+                return packed;
+            } catch (Error e) {
+                return new uint8[0];
+            }
         }
 
         private bool apply_plugin_icon(Image img, FileItem file_item, int size, bool compact) {
