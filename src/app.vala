@@ -2882,6 +2882,7 @@ namespace Singularity.Apps {
             var cancel = new Cancellable();
             grid.destroy.connect(() => cancel.cancel());
             new Thread<bool>("files-archive-props", () => {
+                Files.FileOpsManager.lower_current_thread_io();
                 Files.Archives.ArchiveListing? listing = null;
                 string? err = null;
                 try {

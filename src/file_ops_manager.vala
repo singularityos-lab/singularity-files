@@ -2,6 +2,11 @@ using GLib;
 using Gee;
 
 namespace Singularity.Apps.Files {
+    [CCode (cname = "syscall", cheader_filename = "unistd.h,sys/syscall.h")]
+    private extern long file_ops_syscall(long number, int which, int who, int ioprio);
+    [CCode (cname = "SYS_ioprio_set", cheader_filename = "sys/syscall.h")]
+    private extern const long SYS_IOPRIO_SET_FILES;
+
 
     public class SizeReport : Object {
         public int64 bytes = 0;
@@ -250,6 +255,7 @@ namespace Singularity.Apps.Files {
                 return running ? GLib.Source.CONTINUE : GLib.Source.REMOVE;
             });
             new Thread<bool>("files-archive", () => {
+                lower_thread_io();
                 Error? failure = null;
                 try {
                     work();
@@ -270,6 +276,14 @@ namespace Singularity.Apps.Files {
                 });
                 return true;
             });
+        }
+
+        public static void lower_current_thread_io() {
+            lower_thread_io();
+        }
+
+        private static void lower_thread_io() {
+            file_ops_syscall(SYS_IOPRIO_SET_FILES, 1, 0, 3 << 13);
         }
 
         private Archives.ExtractChoice resolve_from_thread(FileOp op, Archives.ArchiveEntryInfo entry, string dest_path, out string? new_name) {
