@@ -44,6 +44,7 @@ sources = files(
   'src/main.vala',
   'src/window.vala',
   'src/app.vala',
+  'src/agent_intents.vala',
   'src/connect_server_dialog.vala',
   'src/portal_service.vala',
   'src/file_ops_manager.vala',

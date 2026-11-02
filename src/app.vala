@@ -904,6 +904,7 @@ namespace Singularity.Apps {
 
         protected override void startup() {
             base.startup();
+            FilesIntents.install(this);
 
             load_files_css();
             Files.Archives.ArchivePaths.remove_tree(archive_cache_root());
