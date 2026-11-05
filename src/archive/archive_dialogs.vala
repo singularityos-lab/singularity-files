@@ -20,13 +20,13 @@ namespace Singularity.Apps.Files.Archives {
         private Entry name_entry;
         private Label message_label;
         private Image message_icon;
-        private DropDown format_drop;
-        private DropDown level_drop;
+        private ChoiceButton format_drop;
+        private ChoiceButton level_drop;
         private ActionRow level_row;
         private PreferencesGroup protect_group;
         private PasswordRow password_row;
         private PasswordRow confirm_row;
-        private DropDown part_drop;
+        private ChoiceButton part_drop;
         private Button create_btn;
 
         public CreateArchiveDialog(Gtk.Application app, Gtk.Window? parent, GLib.File folder, string[] sources, string default_name) {
@@ -88,17 +88,17 @@ namespace Singularity.Apps.Files.Archives {
             var format_group = new PreferencesGroup(_("Format"));
             string[] names = {};
             foreach (var k in kinds) names += k.label();
-            format_drop = new DropDown.from_strings(names);
+            format_drop = new ChoiceButton.from_strings(names);
             format_drop.valign = Align.CENTER;
             var format_row = new ActionRow(_("Type"), _("ZIP opens everywhere, 7z is smaller"));
             format_row.add_suffix(format_drop);
             format_group.add_row(format_row);
-            level_drop = new DropDown.from_strings({ "" });
+            level_drop = new ChoiceButton.from_strings({ "" });
             level_drop.valign = Align.CENTER;
             level_row = new ActionRow(_("Compression"), null);
             level_row.add_suffix(level_drop);
             format_group.add_row(level_row);
-            part_drop = new DropDown.from_strings({ _("Off"), _("100 MB"), _("700 MB"), _("1 GB"), _("4 GB") });
+            part_drop = new ChoiceButton.from_strings({ _("Off"), _("100 MB"), _("700 MB"), _("1 GB"), _("4 GB") });
             part_drop.valign = Align.CENTER;
             var part_row = new ActionRow(_("Split into Parts"), _("Parts end in .001, .002 and open together"));
             part_row.add_suffix(part_drop);
