@@ -203,6 +203,60 @@ namespace Singularity.Apps {
             return text (args, "prefix") + (text (args, "number_position") == "start" ? numbered : "") + stem + (text (args, "number_position") == "start" ? "" : numbered) + text (args, "suffix") + ext;
         }
 
+        private static string kind_of (string type, string name) {
+            string low = name.down ();
+            if (type.has_prefix ("image/")) return "Images";
+            if (type.has_prefix ("video/")) return "Videos";
+            if (type.has_prefix ("audio/")) return "Music";
+            if (ArchiveFormats.is_archive_type (type) || ArchiveFormats.is_archive_name (name)) return "Archives";
+            if (type == "application/pdf" || type.has_prefix ("application/vnd.oasis.opendocument") || type.has_prefix ("application/vnd.openxmlformats") || type == "application/msword" || type == "application/rtf" || type == "text/markdown" || type == "text/plain" || type == "application/vnd.ms-excel" || type == "application/vnd.ms-powerpoint" || type == "text/csv") return "Documents";
+            if (type == "application/x-executable" || type == "application/vnd.appimage" || low.has_suffix (".sxi") || low.has_suffix (".flatpakref") || low.has_suffix (".deb") || low.has_suffix (".rpm")) return "Installers";
+            if (type.has_prefix ("text/") || type == "application/json" || type == "application/xml" || type == "application/javascript" || type == "application/x-shellscript") return "Code";
+            return "";
+        }
+
+        private static async void share (Singularity.Application app, Json.Object args, owned Singularity.AppIntentReply reply) {
+            try {
+                if (!args.has_member ("paths")) throw new IOError.INVALID_ARGUMENT ("paths is required");
+                File[] files = {};
+                foreach (var n in args.get_array_member ("paths").get_elements ()) {
+                    if (!n.get_string ().has_prefix ("/")) throw new IOError.INVALID_ARGUMENT ("paths must be absolute");
+                    var f = File.new_for_path (n.get_string ());
+                    if (f.query_file_type (FileQueryInfoFlags.NONE) != FileType.REGULAR) throw new IOError.NOT_FOUND ("%s is not a file", f.get_path ());
+                    files += f;
+                }
+                if (files.length == 0) throw new IOError.INVALID_ARGUMENT ("paths is empty");
+                var o = new Json.Object ();
+                o.set_int_member ("files", files.length);
+                string device = text (args, "device");
+                if (device == "") {
+                    Gtk.Window? parent = app.active_window != null && app.active_window.get_mapped () ? app.active_window : null;
+                    Singularity.Share.present (parent, new Singularity.ShareContent.for_files (files), app);
+                    o.set_string_member ("shown", "the share sheet is open on screen, the person picks where");
+                    reply (obj (o), null);
+                    return;
+                }
+                var nearby = Singularity.NearbyClient.get_default ();
+                yield nearby.refresh ();
+                Singularity.NearbyDevice? target = null;
+                string[] names = {};
+                foreach (var d in nearby.devices) {
+                    if (!d.usable) continue;
+                    names += d.name;
+                    if (d.id == device || d.name.down () == device.down ()) target = d;
+                }
+                if (target == null) {
+                    throw new IOError.NOT_FOUND (names.length > 0 ? "no Nearby device %s; reachable: %s".printf (device, string.joinv (", ", names)) : "no paired Nearby device is reachable");
+                }
+                string transfer = yield nearby.share_files (target.id, files);
+                o.set_string_member ("device", target.name);
+                o.set_string_member ("transfer", transfer);
+                reply (obj (o), null);
+            } catch (Error e) {
+                reply (null, e);
+            }
+        }
+
         internal static void install (Singularity.Application app) {
             var agent = app.agent;
             agent.add_intent ("files_list", "List a folder.",
@@ -336,6 +390,46 @@ namespace Singularity.Apps {
                 "{\"type\":\"object\",\"properties\":{\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"to\":{\"type\":\"string\"},\"level\":{\"type\":\"string\",\"enum\":[\"store\",\"fast\",\"normal\",\"best\"]}},\"required\":[\"paths\",\"to\"]}",
                 Singularity.AppIntentRisk.UNDOABLE, (args, reply) => {
                     compress.begin (args, (owned) reply);
+                });
+            agent.add_intent ("files_organize_propose", "Propose how to tidy a folder: which loose files would go into Images, Videos, Music, Documents, Archives, Installers or Code subfolders, optionally split by year. Nothing is moved; files_move does it once the person agrees.",
+                "{\"type\":\"object\",\"properties\":{\"folder\":{\"type\":\"string\"},\"by_year\":{\"type\":\"boolean\"}},\"required\":[\"folder\"]}",
+                Singularity.AppIntentRisk.READ, (args) => {
+                    var root = path (args, "folder");
+                    bool by_year = args.has_member ("by_year") && args.get_boolean_member ("by_year");
+                    var e = root.enumerate_children ("standard::name,standard::type,standard::content-type,standard::is-hidden,time::modified", FileQueryInfoFlags.NOFOLLOW_SYMLINKS);
+                    var moves = new Json.Array ();
+                    var counts = new Gee.TreeMap<string, int> ();
+                    int left = 0;
+                    FileInfo? info;
+                    while ((info = e.next_file ()) != null && moves.get_length () < 2000) {
+                        if (info.get_file_type () != FileType.REGULAR || info.get_is_hidden () || info.get_name ().has_prefix (".")) continue;
+                        string kind = kind_of (info.get_content_type () ?? "", info.get_name ());
+                        if (kind == "") {
+                            left++;
+                            continue;
+                        }
+                        string dest = kind;
+                        var m = info.get_modification_date_time ();
+                        if (by_year && m != null) dest = Path.build_filename (kind, m.to_local ().get_year ().to_string ());
+                        var o = new Json.Object ();
+                        o.set_string_member ("from", root.get_child (info.get_name ()).get_path ());
+                        o.set_string_member ("to", Path.build_filename (root.get_path (), dest, info.get_name ()));
+                        moves.add_object_element (o);
+                        counts[dest] = counts.has_key (dest) ? counts[dest] + 1 : 1;
+                    }
+                    var summary = new Json.Object ();
+                    foreach (var entry in counts.entries) summary.set_int_member (entry.key, entry.value);
+                    var o = new Json.Object ();
+                    o.set_string_member ("folder", root.get_path ());
+                    o.set_object_member ("folders", summary);
+                    o.set_int_member ("left_in_place", left);
+                    o.set_array_member ("moves", moves);
+                    return obj (o);
+                });
+            agent.add_async_intent ("files_share", "Share files. With device, send them to that paired Nearby device by name; without it, open the share sheet on screen so the person picks the destination.",
+                "{\"type\":\"object\",\"properties\":{\"paths\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"device\":{\"type\":\"string\"}},\"required\":[\"paths\"]}",
+                Singularity.AppIntentRisk.IRREVERSIBLE, (args, reply) => {
+                    share.begin (app, args, (owned) reply);
                 });
             agent.add_intent ("files_delete", "Delete a file or an empty folder for good.",
                 PATH, Singularity.AppIntentRisk.IRREVERSIBLE, (args) => {
