@@ -674,18 +674,24 @@ namespace Singularity.Apps {
         }
 
         private void empty_trash() {
+            empty_trash_async.begin();
+        }
+
+        private async void empty_trash_async() {
             try {
-                var trash = File.new_for_uri("trash://");
-                var e = trash.enumerate_children("standard::*", FileQueryInfoFlags.NONE, null);
-                FileInfo? fi;
-                while ((fi = e.next_file(null)) != null) {
-                    var child = trash.get_child(fi.get_name());
-                    child.delete(null);
-                }
-                navigate_to.begin(File.new_for_uri("trash://"));
+                yield Singularity.Async.run<bool>((c) => {
+                    var trash = File.new_for_uri("trash://");
+                    var e = trash.enumerate_children("standard::name", FileQueryInfoFlags.NONE, c);
+                    FileInfo? fi;
+                    while ((fi = e.next_file(c)) != null) {
+                        trash.get_child(fi.get_name()).delete(c);
+                    }
+                    return true;
+                }, Singularity.Async.Qos.USER);
             } catch (Error e) {
                 warning("Empty trash failed: %s", e.message);
             }
+            navigate_to.begin(File.new_for_uri("trash://"));
         }
 
         private void copy_selected(bool cut) {
@@ -4299,37 +4305,48 @@ namespace Singularity.Apps {
             string dir_path = last_slash >= 0 ? text.substring(0, last_slash + 1) : "/";
             string prefix = last_slash >= 0 ? text.substring(last_slash + 1) : text;
             if (dir_path == "") dir_path = "/";
-            var dir = File.new_for_path(dir_path);
-            if (!dir.query_exists(null)) { path_completion_popover.popdown(); return; }
+            if (_completion_cancel != null) _completion_cancel.cancel();
+            _completion_cancel = new Cancellable();
+            fill_path_completions.begin(dir_path, prefix, _completion_cancel);
+        }
+
+        private Cancellable? _completion_cancel = null;
+
+        private async void fill_path_completions(string dir_path, string prefix, Cancellable cancel) {
+            var found = new GenericArray<string>();
             try {
-                var enumerator = dir.enumerate_children("standard::name,standard::type", FileQueryInfoFlags.NONE, null);
-                int count = 0;
-                FileInfo? info;
-                while ((info = enumerator.next_file(null)) != null && count < 12) {
-                    string name = info.get_name();
-                    if (info.get_file_type() == FileType.DIRECTORY &&
-                        (prefix == "" || name.has_prefix(prefix))) {
-                        string full_path = dir_path + name;
-                        var lrow = new ListBoxRow();
-                        lrow.set_data<string>("path-completion", full_path);
-                        var lbl = new Label(full_path);
-                        lbl.halign = Align.START;
-                        lbl.hexpand = true;
-                        lbl.ellipsize = Pango.EllipsizeMode.START;
-                        lbl.margin_start = 8;
-                        lbl.margin_end = 8;
-                        lbl.margin_top = 3;
-                        lbl.margin_bottom = 3;
-                        lrow.set_child(lbl);
-                        path_completion_list.append(lrow);
-                        count++;
+                found = yield Singularity.Async.run<GenericArray<string>>((c) => {
+                    var names = new GenericArray<string>();
+                    var dir = File.new_for_path(dir_path);
+                    var enumerator = dir.enumerate_children("standard::name,standard::type", FileQueryInfoFlags.NONE, c);
+                    FileInfo? info = null;
+                    while (names.length < 12 && (info = enumerator.next_file(c)) != null) {
+                        string name = info.get_name();
+                        if (info.get_file_type() == FileType.DIRECTORY && (prefix == "" || name.has_prefix(prefix)))
+                            names.add(dir_path + name);
                     }
-                }
-                if (count > 0) path_completion_popover.popup();
-                else path_completion_popover.popdown();
+                    return names;
+                }, Singularity.Async.Qos.INTERACTIVE, cancel);
             } catch (Error e) {
-                path_completion_popover.popdown();
+                if (e is IOError.CANCELLED) return;
             }
+            if (cancel.is_cancelled()) return;
+            foreach (unowned string full_path in found.data) {
+                var lrow = new ListBoxRow();
+                lrow.set_data<string>("path-completion", full_path);
+                var lbl = new Label(full_path);
+                lbl.halign = Align.START;
+                lbl.hexpand = true;
+                lbl.ellipsize = Pango.EllipsizeMode.START;
+                lbl.margin_start = 8;
+                lbl.margin_end = 8;
+                lbl.margin_top = 3;
+                lbl.margin_bottom = 3;
+                lrow.set_child(lbl);
+                path_completion_list.append(lrow);
+            }
+            if (found.length > 0) path_completion_popover.popup();
+            else path_completion_popover.popdown();
         }
 
         /**
@@ -4973,14 +4990,20 @@ namespace Singularity.Apps {
             var btn = _place_buttons["trash:///"] ?? _place_buttons["trash://"];
             var row = btn as Singularity.Widgets.SidebarRow;
             if (row == null) return;
+            refresh_trash_icon_async.begin(row);
+        }
+
+        private async void refresh_trash_icon_async(Singularity.Widgets.SidebarRow row) {
             bool full = false;
             try {
-                var trash = GLib.File.new_for_uri("trash://");
-                var en = trash.enumerate_children(
-                    "standard::name", GLib.FileQueryInfoFlags.NONE, null);
-                if (en.next_file(null) != null) full = true;
+                full = yield Singularity.Async.run<bool>((c) => {
+                    var trash = GLib.File.new_for_uri("trash://");
+                    var en = trash.enumerate_children(
+                        "standard::name", GLib.FileQueryInfoFlags.NONE, c);
+                    return en.next_file(c) != null;
+                }, Singularity.Async.Qos.UTILITY, Singularity.Async.scope_of(row));
             } catch (Error e) {
-                full = false;
+                if (e is IOError.CANCELLED) return;
             }
             row.update_icon_name(full ? "user-trash-full-symbolic"
                                       : "user-trash-symbolic");
