@@ -282,6 +282,35 @@ namespace Singularity.Apps.Files {
             lower_thread_io();
         }
 
+        private async void copy_at_idle_priority(GLib.File src, GLib.File dst, FileOp op, int64 before) throws Error {
+            SourceFunc resume = copy_at_idle_priority.callback;
+            Error? failure = null;
+            int64 latest = 0;
+            int posted = 0;
+            new Thread<bool>("files-copy", () => {
+                lower_thread_io();
+                try {
+                    src.copy(dst, FileCopyFlags.NONE, op.cancellable, (current, total) => {
+                        latest = current;
+                        if (!AtomicInt.compare_and_exchange(ref posted, 0, 1)) return;
+                        GLib.Idle.add(() => {
+                            AtomicInt.set(ref posted, 0);
+                            op.done_bytes = before + latest;
+                            schedule_emit();
+                            state_changed();
+                            return GLib.Source.REMOVE;
+                        });
+                    });
+                } catch (Error e) {
+                    failure = e;
+                }
+                GLib.Idle.add((owned) resume);
+                return true;
+            });
+            yield;
+            if (failure != null) throw failure;
+        }
+
         private static void lower_thread_io() {
             file_ops_syscall(SYS_IOPRIO_SET_FILES, 1, 0, 3 << 13);
         }
@@ -649,15 +678,7 @@ namespace Singularity.Apps.Files {
             } else {
                 // Regular file (or symlink we don't follow) - copy.
                 int64 before = op.done_bytes;
-                yield src.copy_async(dst,
-                    FileCopyFlags.NONE,
-                    GLib.Priority.DEFAULT,
-                    op.cancellable,
-                    (current, total) => {
-                        op.done_bytes = before + current;
-                        schedule_emit();
-                        state_changed();
-                    });
+                yield copy_at_idle_priority(src, dst, op, before);
                 op.done_bytes = before + info.get_size();
                 op.done_files++;
                 if (op.is_move) {
