@@ -2384,6 +2384,7 @@ namespace Singularity.Apps {
         private void ensure_ops_manager() {
             if (_ops == null) {
                 _ops = new Files.FileOpsManager();
+                _ops.progress_widget = _ops_progress_bar;
                 _ops.state_changed.connect(() => update_ops_banner());
                 _ops.conflict.connect((request) => {
                     new Files.ConflictDialog(this, request, _ops.active_count()).present();
@@ -2471,6 +2472,7 @@ namespace Singularity.Apps {
             _ops_progress_bar.valign = Align.CENTER;
             _ops_progress_bar.add_css_class("files-ops-progress");
             bar.append(_ops_progress_bar);
+            if (_ops != null) _ops.progress_widget = _ops_progress_bar;
 
             _ops_cancel_btn = new Gtk.Button.from_icon_name("process-stop-symbolic");
             _ops_cancel_btn.add_css_class("flat");
@@ -2889,7 +2891,7 @@ namespace Singularity.Apps {
             var cancel = new Cancellable();
             grid.destroy.connect(() => cancel.cancel());
             new Thread<bool>("files-archive-props", () => {
-                Files.FileOpsManager.lower_current_thread_io();
+                var background = Singularity.BackgroundWork.enter(grid);
                 Files.Archives.ArchiveListing? listing = null;
                 string? err = null;
                 try {
@@ -2897,6 +2899,7 @@ namespace Singularity.Apps {
                 } catch (Error e) {
                     err = e.message;
                 }
+                background.finish();
                 GLib.Idle.add(() => {
                     if (listing == null) {
                         rows[0].label = err ?? _("Cannot read the archive.");
@@ -4641,8 +4644,8 @@ namespace Singularity.Apps {
         }
 
         private void decode_thumbnail(owned ThumbJob job) {
-            Posix.setpriority(Posix.PRIO_PROCESS, 0, 10);
             if (!thumb_is_wanted(job.file_path)) return;
+            var background = Singularity.BackgroundWork.enter();
             Gdk.Texture? texture = null;
             thumb_lock.lock();
             if (thumb_compute == null) thumb_compute = new Singularity.Compute();
@@ -4657,6 +4660,7 @@ namespace Singularity.Apps {
                 var format = header[3] != 0 ? Gdk.MemoryFormat.R8G8B8A8 : Gdk.MemoryFormat.R8G8B8;
                 texture = new Gdk.MemoryTexture((int) header[0], (int) header[1], format, pixels, header[2]);
             }
+            background.finish();
             GLib.Idle.add(() => {
                 Gdk.Paintable? paintable = null;
                 if (texture != null) {

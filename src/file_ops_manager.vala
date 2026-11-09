@@ -2,10 +2,6 @@ using GLib;
 using Gee;
 
 namespace Singularity.Apps.Files {
-    [CCode (cname = "syscall", cheader_filename = "unistd.h,sys/syscall.h")]
-    private extern long file_ops_syscall(long number, int which, int who, int ioprio);
-    [CCode (cname = "SYS_ioprio_set", cheader_filename = "sys/syscall.h")]
-    private extern const long SYS_IOPRIO_SET_FILES;
 
 
     public class SizeReport : Object {
@@ -129,6 +125,7 @@ namespace Singularity.Apps.Files {
      * across all operations: sum(done_bytes) / sum(total_bytes).
      */
     public class FileOpsManager : Object {
+        public Gtk.Widget? progress_widget { get; set; default = null; }
         public signal void state_changed();
         public signal void conflict(ConflictRequest request);
         public signal void password_needed(ArchivePasswordRequest request);
@@ -255,13 +252,14 @@ namespace Singularity.Apps.Files {
                 return running ? GLib.Source.CONTINUE : GLib.Source.REMOVE;
             });
             new Thread<bool>("files-archive", () => {
-                lower_thread_io();
+                var background = Singularity.BackgroundWork.enter(progress_widget);
                 Error? failure = null;
                 try {
                     work();
                 } catch (Error e) {
                     failure = e;
                 }
+                background.finish();
                 GLib.Idle.add(() => {
                     running = false;
                     GLib.Source.remove(ticker);
@@ -278,17 +276,13 @@ namespace Singularity.Apps.Files {
             });
         }
 
-        public static void lower_current_thread_io() {
-            lower_thread_io();
-        }
-
         private async void copy_at_idle_priority(GLib.File src, GLib.File dst, FileOp op, int64 before) throws Error {
             SourceFunc resume = copy_at_idle_priority.callback;
             Error? failure = null;
             int64 latest = 0;
             int posted = 0;
             new Thread<bool>("files-copy", () => {
-                lower_thread_io();
+                var background = Singularity.BackgroundWork.enter(progress_widget);
                 try {
                     src.copy(dst, FileCopyFlags.NONE, op.cancellable, (current, total) => {
                         latest = current;
@@ -304,6 +298,7 @@ namespace Singularity.Apps.Files {
                 } catch (Error e) {
                     failure = e;
                 }
+                background.finish();
                 GLib.Idle.add((owned) resume);
                 return true;
             });
@@ -311,9 +306,6 @@ namespace Singularity.Apps.Files {
             if (failure != null) throw failure;
         }
 
-        private static void lower_thread_io() {
-            file_ops_syscall(SYS_IOPRIO_SET_FILES, 1, 0, 3 << 13);
-        }
 
         private Archives.ExtractChoice resolve_from_thread(FileOp op, Archives.ArchiveEntryInfo entry, string dest_path, out string? new_name) {
             var gate = new ThreadGate();
