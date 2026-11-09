@@ -1257,6 +1257,7 @@ namespace Singularity.Apps {
                 _volume_monitor.mount_removed.connect((m) => { rebuild_devices_section(); });
                 _volume_monitor.volume_added.connect((v) => { rebuild_devices_section(); });
                 _volume_monitor.volume_removed.connect((v) => { rebuild_devices_section(); });
+                DriveHealthMonitor.get_default().changed.connect(() => rebuild_devices_section());
 
                 // Drag-to-bookmark: drop a folder URI onto the sidebar
                 var drop = new Gtk.DropTarget(GLib.Type.INVALID, Gdk.DragAction.COPY);
@@ -3765,6 +3766,7 @@ namespace Singularity.Apps {
             disks_btn.clicked.connect(show_disks_page);
             _disks_sidebar_btn = disks_btn;
             _devices_section.append(disks_btn);
+            mark_troubled_drives.begin(disks_row, disks_btn);
             append_nearby_devices();
         }
 
@@ -5014,6 +5016,50 @@ namespace Singularity.Apps {
             return fallback;
         }
 
+        private async void mark_troubled_drives(Box row, Button btn) {
+            DriveHealth? worst = null;
+            foreach (var h in yield DriveHealth.all()) {
+                if (h.device == "" || !h.troubled) continue;
+                if (worst == null || h.condition > worst.condition) worst = h;
+            }
+            if (worst == null || row.get_parent() != btn) return;
+            var mark = new Image.from_icon_name(worst.icon_name());
+            mark.pixel_size = 16;
+            mark.hexpand = true;
+            mark.halign = Align.END;
+            mark.add_css_class(worst.condition == DriveCondition.FAILING ? "error" : "warning");
+            row.append(mark);
+            btn.tooltip_text = "%s: %s".printf(worst.name != "" ? worst.name : _("USB Drive"), worst.summary());
+        }
+
+        private static string? device_for_path(string path) {
+            foreach (var m in GLib.VolumeMonitor.get().get_mounts()) {
+                var root = m.get_root();
+                if (root == null || root.get_path() != path) continue;
+                var v = m.get_volume();
+                return v != null ? v.get_identifier(VolumeIdentifier.UNIX_DEVICE) : null;
+            }
+            return null;
+        }
+
+        private async void show_drive_health(Box card, Button btn, string device) {
+            var h = yield DriveHealth.lookup(device);
+            if (h == null || !h.troubled) return;
+            var line = new Box(Orientation.HORIZONTAL, 4);
+            line.halign = Align.CENTER;
+            var mark = new Image.from_icon_name(h.icon_name());
+            mark.pixel_size = 16;
+            string tone = h.condition == DriveCondition.FAILING ? "error" : "warning";
+            mark.add_css_class(tone);
+            line.append(mark);
+            var state = new Label(h.condition == DriveCondition.FAILING ? _("Failing") : _("Worn"));
+            state.add_css_class(tone);
+            state.add_css_class("caption");
+            line.append(state);
+            card.append(line);
+            btn.tooltip_text = "%s\n%s".printf(h.summary(), h.explain());
+        }
+
         private void enumerate_storage(StorageEntryFunc fn) {
             var vm = GLib.VolumeMonitor.get();
             var seen = new GLib.GenericSet<string>(str_hash, str_equal);
@@ -5147,6 +5193,8 @@ namespace Singularity.Apps {
 
             btn.set_child(vbox);
             btn.clicked.connect(() => navigate_user(File.new_for_path(path)));
+            string? device = device_for_path(path);
+            if (device != null) show_drive_health.begin(vbox, btn, device);
 
             // Wrap in FlowBoxChild with fixed size so it doesn't stretch
             var fbi = new FlowBoxChild();
