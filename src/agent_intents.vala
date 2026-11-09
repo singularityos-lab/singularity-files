@@ -116,12 +116,14 @@ namespace Singularity.Apps {
                 q.folders = args.has_member ("folders") && args.get_boolean_member ("folders");
                 q.hidden = args.has_member ("hidden") && args.get_boolean_member ("hidden");
                 q.limit = args.has_member ("limit") ? (int) args.get_int_member ("limit").clamp (1, 2000) : 200;
-                SourceFunc done = search.callback;
-                new Thread<void> ("files-agent-search", () => {
-                    walk (q, root, 0);
-                    Idle.add ((owned) done);
-                });
-                yield;
+                try {
+                    yield Async.run<bool>((c) => {
+                        walk (q, root, 0);
+                        return true;
+                    }, Async.Qos.USER);
+                } catch (Error e) {
+                    warning("%s", e.message);
+                }
                 var o = new Json.Object ();
                 o.set_int_member ("count", q.found.get_length ());
                 o.set_boolean_member ("truncated", q.found.get_length () >= q.limit);
@@ -157,16 +159,18 @@ namespace Singularity.Apps {
                     default: throw new IOError.INVALID_ARGUMENT ("level is store, fast, normal or best");
                 }
                 Error? failure = null;
-                SourceFunc done = compress.callback;
-                new Thread<void> ("files-agent-compress", () => {
-                    try {
-                        creator.run ();
-                    } catch (Error e) {
-                        failure = e;
-                    }
-                    Idle.add ((owned) done);
-                });
-                yield;
+                try {
+                    yield Async.run<bool>((c) => {
+                        try {
+                            creator.run ();
+                        } catch (Error e) {
+                            failure = e;
+                        }
+                        return true;
+                    }, Async.Qos.USER);
+                } catch (Error e) {
+                    warning("%s", e.message);
+                }
                 if (failure != null) throw failure;
                 var o = new Json.Object ();
                 o.set_string_member ("path", to.get_path ());

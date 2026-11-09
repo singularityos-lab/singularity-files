@@ -241,19 +241,20 @@ namespace Singularity.Apps.Files {
         }
 
         private static async string? run_create(FolderTemplate tpl, GLib.File target) {
-            SourceFunc resume = run_create.callback;
             string? err = null;
             var now = new DateTime.now_local();
-            new Thread<bool>("new-folder", () => {
-                try {
-                    FolderTemplates.create(tpl, target, now);
-                } catch (Error e) {
-                    err = e.message;
-                }
-                Idle.add((owned) resume);
-                return true;
-            });
-            yield;
+            try {
+                yield Async.run<bool>((c) => {
+                    try {
+                        FolderTemplates.create(tpl, target, now);
+                    } catch (Error e) {
+                        err = e.message;
+                    }
+                    return true;
+                }, Async.Qos.USER);
+            } catch (Error e) {
+                warning("%s", e.message);
+            }
             return err;
         }
     }

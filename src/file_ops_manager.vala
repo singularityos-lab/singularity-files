@@ -251,7 +251,7 @@ namespace Singularity.Apps.Files {
                 state_changed();
                 return running ? GLib.Source.CONTINUE : GLib.Source.REMOVE;
             });
-            new Thread<bool>("files-archive", () => {
+            Async.dispatch(this, Async.Qos.USER, (c) => {
                 var background = Singularity.BackgroundWork.enter(progress_widget);
                 Error? failure = null;
                 try {
@@ -260,7 +260,7 @@ namespace Singularity.Apps.Files {
                     failure = e;
                 }
                 background.finish();
-                GLib.Idle.add(() => {
+                return () => {
                     running = false;
                     GLib.Source.remove(ticker);
                     poll();
@@ -270,39 +270,33 @@ namespace Singularity.Apps.Files {
                         op.error_message = failure.message;
                     }
                     finalize_op(op);
-                    return GLib.Source.REMOVE;
-                });
-                return true;
+                };
             });
         }
 
         private async void copy_at_idle_priority(GLib.File src, GLib.File dst, FileOp op, int64 before) throws Error {
-            SourceFunc resume = copy_at_idle_priority.callback;
             Error? failure = null;
             int64 latest = 0;
             int posted = 0;
-            new Thread<bool>("files-copy", () => {
+            yield Singularity.Async.run<bool>((c) => {
                 var background = Singularity.BackgroundWork.enter(progress_widget);
                 try {
                     src.copy(dst, FileCopyFlags.NONE, op.cancellable, (current, total) => {
                         latest = current;
                         if (!AtomicInt.compare_and_exchange(ref posted, 0, 1)) return;
-                        GLib.Idle.add(() => {
+                        Singularity.Async.post(null, () => {
                             AtomicInt.set(ref posted, 0);
                             op.done_bytes = before + latest;
                             schedule_emit();
                             state_changed();
-                            return GLib.Source.REMOVE;
                         });
                     });
                 } catch (Error e) {
                     failure = e;
                 }
                 background.finish();
-                GLib.Idle.add((owned) resume);
                 return true;
-            });
-            yield;
+            }, Singularity.Async.Qos.USER);
             if (failure != null) throw failure;
         }
 

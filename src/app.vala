@@ -2653,18 +2653,19 @@ namespace Singularity.Apps {
         }
 
         private static async string? run_save_template(File folder, File templates, bool with_files) {
-            SourceFunc resume = run_save_template.callback;
             string? err = null;
-            new Thread<bool>("save-template", () => {
-                try {
-                    Files.FolderTemplates.save_folder(folder, templates, with_files);
-                } catch (Error e) {
-                    err = e.message;
-                }
-                Idle.add((owned) resume);
-                return true;
-            });
-            yield;
+            try {
+                yield Async.run<bool>((c) => {
+                    try {
+                        Files.FolderTemplates.save_folder(folder, templates, with_files);
+                    } catch (Error e) {
+                        err = e.message;
+                    }
+                    return true;
+                }, Async.Qos.USER);
+            } catch (Error e) {
+                warning("%s", e.message);
+            }
             return err;
         }
 
@@ -2890,7 +2891,7 @@ namespace Singularity.Apps {
             }
             var cancel = new Cancellable();
             grid.destroy.connect(() => cancel.cancel());
-            new Thread<bool>("files-archive-props", () => {
+            Async.dispatch(this, Async.Qos.USER, (c) => {
                 var background = Singularity.BackgroundWork.enter(grid);
                 Files.Archives.ArchiveListing? listing = null;
                 string? err = null;
@@ -2900,10 +2901,10 @@ namespace Singularity.Apps {
                     err = e.message;
                 }
                 background.finish();
-                GLib.Idle.add(() => {
+                return () => {
                     if (listing == null) {
                         rows[0].label = err ?? _("Cannot read the archive.");
-                        return GLib.Source.REMOVE;
+                        return;
                     }
                     string files = ngettext("%d file", "%d files", listing.files).printf(listing.files);
                     string folders = ngettext("%d folder", "%d folders", listing.folders).printf(listing.folders);
@@ -2917,9 +2918,7 @@ namespace Singularity.Apps {
                     if (listing.format_name != "") format = "%s, %s".printf(format, listing.format_name);
                     if (listing.encrypted) format = _("%s, protected with a password").printf(format);
                     rows[4].label = format;
-                    return GLib.Source.REMOVE;
-                });
-                return true;
+                };
             });
         }
 
@@ -4544,7 +4543,6 @@ namespace Singularity.Apps {
         }
 
         private const int THUMB_CACHE_SIZE = 400;
-        private ThreadPool<ThumbJob>? thumb_pool = null;
         private Gee.HashMap<string, Gdk.Paintable> thumb_cache = new Gee.HashMap<string, Gdk.Paintable>();
         private Gee.LinkedList<string> thumb_order = new Gee.LinkedList<string>();
         private Mutex thumb_lock = Mutex();
@@ -4620,13 +4618,6 @@ namespace Singularity.Apps {
                 }
                 return;
             }
-            if (thumb_pool == null) {
-                try {
-                    thumb_pool = new ThreadPool<ThumbJob>.with_owned_data((job) => decode_thumbnail(job), 2, false);
-                } catch (ThreadError e) {
-                    return;
-                }
-            }
             var job = new ThumbJob();
             job.source_path = source_path;
             job.file_path = file_path;
@@ -4637,14 +4628,11 @@ namespace Singularity.Apps {
             job.content_type = content_type;
             job.fallback = fallback;
             job.compact = compact;
-            try {
-                thumb_pool.add((owned) job);
-            } catch (ThreadError e) {
-            }
+            Singularity.Async.dispatch(img, Singularity.Async.Qos.UTILITY, (c) => decode_thumbnail(job));
         }
 
-        private void decode_thumbnail(owned ThumbJob job) {
-            if (!thumb_is_wanted(job.file_path)) return;
+        private Singularity.Async.Apply? decode_thumbnail(ThumbJob job) {
+            if (!thumb_is_wanted(job.file_path)) return null;
             var background = Singularity.BackgroundWork.enter();
             Gdk.Texture? texture = null;
             thumb_lock.lock();
@@ -4661,7 +4649,7 @@ namespace Singularity.Apps {
                 texture = new Gdk.MemoryTexture((int) header[0], (int) header[1], format, pixels, header[2]);
             }
             background.finish();
-            GLib.Idle.add(() => {
+            return () => {
                 Gdk.Paintable? paintable = null;
                 if (texture != null) {
                     paintable = Files.ThumbnailFrame.decorate(texture, job.content_type, job.file_path, job.compact);
@@ -4678,8 +4666,7 @@ namespace Singularity.Apps {
                         job.spinner.visible = false;
                     }
                 }
-                return GLib.Source.REMOVE;
-            });
+            };
         }
 
         private static uint8[] pack_thumbnail(string source_path, int px) {

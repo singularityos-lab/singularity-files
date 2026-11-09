@@ -27,7 +27,6 @@ public class VideoIconProvider : Object, Singularity.FileIconProvider {
     private const int MAX_PIXELS = 512;
     private const int64 MAX_FILE_BYTES = 16LL * 1024 * 1024 * 1024;
 
-    private static ThreadPool<VideoThumbnailJob>? pool = null;
     private GLib.Settings? files_settings = null;
 
     construct {
@@ -44,56 +43,18 @@ public class VideoIconProvider : Object, Singularity.FileIconProvider {
     }
 
     public async Gdk.Paintable? load_icon(File file, int size) {
-        int64 mtime = 0;
-        string? mime = null;
         try {
             var info = yield file.query_info_async(
-                FileAttribute.TIME_MODIFIED + "," + FileAttribute.STANDARD_SIZE + "," + FileAttribute.STANDARD_CONTENT_TYPE,
+                FileAttribute.STANDARD_SIZE,
                 FileQueryInfoFlags.NONE);
             if (info.get_size() > MAX_FILE_BYTES) return null;
-            mtime = info.get_modification_date_time().to_unix();
-            string? type = info.get_content_type();
-            if (type != null) mime = ContentType.get_mime_type(type);
         } catch (Error e) {
             return null;
         }
-        var job = new VideoThumbnailJob(file.get_uri(), mtime, int.min(MAX_PIXELS, int.max(64, size * 2)), mime);
-        SourceFunc callback = load_icon.callback;
-        job.done.connect(() => callback());
         try {
-            if (pool == null) pool = new ThreadPool<VideoThumbnailJob>.with_owned_data((j) => j.run(), 2, false);
-            pool.add(job);
-        } catch (ThreadError e) {
+            return yield Singularity.Async.Thumbnails.shared().load(file, int.min(MAX_PIXELS, int.max(64, size * 2)), Singularity.Async.Qos.UTILITY);
+        } catch (Error e) {
             return null;
         }
-        yield;
-        return job.texture;
-    }
-}
-
-public class VideoThumbnailJob : Object {
-    public string uri { get; construct; }
-    public int64 mtime { get; construct; }
-    public int pixels { get; construct; }
-    public string? mime { get; construct; }
-    public Gdk.Texture? texture = null;
-
-    public signal void done();
-
-    public VideoThumbnailJob(string uri, int64 mtime, int pixels, string? mime) {
-        Object(uri: uri, mtime: mtime, pixels: pixels, mime: mime);
-    }
-
-    public void run() {
-        var pixbuf = Singularity.FileSystem.VideoThumbnailer.thumbnail(uri, mtime, pixels, mime);
-        if (pixbuf != null) {
-            var format = pixbuf.has_alpha ? Gdk.MemoryFormat.R8G8B8A8 : Gdk.MemoryFormat.R8G8B8;
-            texture = new Gdk.MemoryTexture(pixbuf.width, pixbuf.height, format,
-                pixbuf.read_pixel_bytes(), pixbuf.rowstride);
-        }
-        Idle.add(() => {
-            done();
-            return Source.REMOVE;
-        });
     }
 }
