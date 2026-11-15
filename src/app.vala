@@ -76,6 +76,8 @@ namespace Singularity.Apps {
         private Singularity.Widgets.ColumnBrowser? _col_browser = null;
         private File[]         _col_folders = {};
         private int            _col_count = 0;
+        private GLib.FileMonitor?[] _col_monitors = {};
+        private uint           _col_refresh_id = 0;
         private int            _col_viewport_start = 0;
         private const int      MAX_COL_VISIBLE = 3;
 
@@ -527,7 +529,7 @@ namespace Singularity.Apps {
 
             var act_reload = new SimpleAction("reload", null);
             act_reload.activate.connect(() => {
-                if (current_folder != null) navigate_to.begin(current_folder);
+                if (current_folder != null && !refresh_columns()) navigate_to.begin(current_folder);
             });
             add_action(act_reload);
 
@@ -2097,7 +2099,7 @@ namespace Singularity.Apps {
             bool ctrl = (state & Gdk.ModifierType.CONTROL_MASK) != 0;
 
             if (!ctrl && keyval == Gdk.Key.F5 && current_folder != null) {
-                navigate_to.begin(current_folder);
+                if (!refresh_columns()) navigate_to.begin(current_folder);
                 return true;
             }
 
@@ -5286,20 +5288,57 @@ namespace Singularity.Apps {
             // Drop every pane after the requested index.
             _col_browser.pop_to(idx - 1);
             if (_col_folders.length > idx) _col_folders.resize(idx);
+            for (int m = idx; m < _col_monitors.length; m++) {
+                if (_col_monitors[m] != null) _col_monitors[m].cancel();
+            }
+            if (_col_monitors.length > idx) _col_monitors.resize(idx);
             _col_count = idx;
 
             var pane = _col_browser.push_pane();
             _col_folders += folder;
             _col_count = idx + 1;
+            _col_monitors += watch_column(folder);
 
             // Sliding viewport: always show rightmost MAX_COL_VISIBLE panes
             _col_viewport_start = int.max(0, _col_count - MAX_COL_VISIBLE);
             rebuild_visible_panes();
 
-            fill_column_pane.begin(idx, folder, pane.list_box);
+            fill_column_pane.begin(idx, folder, pane);
         }
 
-        private async void fill_column_pane(int idx, File folder, ListBox list_box) {
+        private GLib.FileMonitor? watch_column(File folder) {
+            if (!folder.has_uri_scheme("file")) return null;
+            try {
+                var monitor = folder.monitor_directory(FileMonitorFlags.WATCH_MOVES, null);
+                monitor.changed.connect((src, dest, event) => {
+                    if (event == FileMonitorEvent.CHANGED || event == FileMonitorEvent.PRE_UNMOUNT) return;
+                    if (_col_refresh_id != 0) Source.remove(_col_refresh_id);
+                    _col_refresh_id = Timeout.add(150, () => {
+                        _col_refresh_id = 0;
+                        refresh_columns();
+                        return Source.REMOVE;
+                    });
+                });
+                return monitor;
+            } catch (Error e) {
+                return null;
+            }
+        }
+
+        private bool refresh_columns() {
+            if (_col_browser == null || view_stack_ref == null
+                || view_stack_ref.visible_child_name != "column" || _col_folders.length == 0)
+                return false;
+            var folders = _col_folders;
+            for (int i = 0; i < folders.length; i++) {
+                if (i > 0 && !folders[i].query_exists()) break;
+                load_column_pane(i, folders[i]);
+            }
+            return true;
+        }
+
+        private async void fill_column_pane(int idx, File folder, Singularity.Widgets.ColumnBrowserPane pane) {
+            var list_box = pane.list_box;
             try {
                 bool show_hidden = settings.get_boolean("show-hidden");
                 var items = new GenericArray<FileItem>();
@@ -5348,12 +5387,13 @@ namespace Singularity.Apps {
                     return a.name.collate(b.name);
                 });
 
-                // set_empty handles the placeholder swap internally.
+                if (pane.parent == null) return;
                 if (items.length == 0) {
-                    var pane = _col_browser != null ? _col_browser.get_pane(idx) : null;
-                    if (pane != null) pane.set_empty("folder-symbolic", "Empty", "");
+                    pane.set_empty("folder-symbolic", _("Empty"), "");
                     return;
                 }
+                pane.set_filled();
+                File? open_child = idx + 1 < _col_folders.length ? _col_folders[idx + 1] : null;
 
                 for (int i = 0; i < items.length; i++) {
                     var item = items.get(i);
@@ -5392,6 +5432,10 @@ namespace Singularity.Apps {
 
                     row.set_child(row_box);
                     row.set_data<FileItem>("col-file-item", item);
+                    if (open_child != null && item.file.equal(open_child)) {
+                        var open_row = row;
+                        Idle.add(() => { list_box.select_row(open_row); return Source.REMOVE; });
+                    }
 
                     var captured_item = item;
                     var ctx_gesture = new GestureClick();
