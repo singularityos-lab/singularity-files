@@ -1641,6 +1641,7 @@ namespace Singularity.Apps {
                 var list_item = (ListItem)item;
                 var label = new Label("");
                 label.halign = Align.END;
+                label.margin_end = 12;
                 label.add_css_class("dim-label");
                 list_item.set_child(label);
             });
@@ -5306,6 +5307,22 @@ namespace Singularity.Apps {
             fill_column_pane.begin(idx, folder, pane);
         }
 
+        private void trim_columns(int idx) {
+            if (_col_browser == null || _col_folders.length <= idx + 1) return;
+            _col_browser.pop_to(idx);
+            for (int m = idx + 1; m < _col_monitors.length; m++) {
+                if (_col_monitors[m] != null) _col_monitors[m].cancel();
+            }
+            if (_col_monitors.length > idx + 1) _col_monitors.resize(idx + 1);
+            _col_folders.resize(idx + 1);
+            _col_count = idx + 1;
+            _col_viewport_start = int.max(0, _col_count - MAX_COL_VISIBLE);
+            rebuild_visible_panes();
+            current_folder = _col_folders[idx];
+            update_menu_actions();
+            update_path_bar(current_folder);
+        }
+
         private GLib.FileMonitor? watch_column(File folder) {
             if (!folder.has_uri_scheme("file")) return null;
             try {
@@ -5449,6 +5466,22 @@ namespace Singularity.Apps {
                 }
 
                 int captured_idx2 = idx;
+                list_box.activate_on_single_click = false;
+                list_box.row_selected.connect((row) => {
+                    if (row == null) return;
+                    var fi = row.get_data<FileItem>("col-file-item");
+                    if (fi == null) return;
+                    if (!fi.is_folder) {
+                        trim_columns(captured_idx2);
+                        return;
+                    }
+                    if (_col_folders.length > captured_idx2 + 1
+                        && _col_folders[captured_idx2 + 1].equal(fi.file)) return;
+                    load_column_pane(captured_idx2 + 1, fi.file);
+                    current_folder = fi.file;
+                    update_menu_actions();
+                    update_path_bar(fi.file);
+                });
                 list_box.row_activated.connect((row) => {
                     var fi = row.get_data<FileItem>("col-file-item");
                     if (fi == null) return;
@@ -5478,7 +5511,9 @@ namespace Singularity.Apps {
                         return;
                     }
                     if (fi.is_folder) {
-                        load_column_pane(captured_idx2 + 1, fi.file);
+                        if (_col_folders.length <= captured_idx2 + 1
+                            || !_col_folders[captured_idx2 + 1].equal(fi.file))
+                            load_column_pane(captured_idx2 + 1, fi.file);
                         current_folder = fi.file;
                         update_menu_actions();
                         update_path_bar(fi.file);
