@@ -1,0 +1,5 @@
+[Card]
+App=dev.sinty.files
+Intents=files_list;files_search;files_show;files_mkdir;files_copy;files_move
+Module=libsingularity-files-card.so
+Symbol=singularity_files_card_new

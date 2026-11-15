@@ -74,6 +74,16 @@ executable('singularity-files',
   install: true
 )
 
+shared_module('singularity-files-card',
+  files('card/agent_card.vala'),
+  dependencies: [gtk_dep, gee_dep, dependency('json-glib-1.0'), libsingularity_dep],
+  install: true,
+  install_dir: get_option('libdir') / 'singularity' / 'cards'
+)
+install_data('card/dev.sinty.files.card',
+  install_dir: get_option('datadir') / 'singularity' / 'cards'
+)
+
 archive_test = executable('archive-test',
   archive_sources + files('tests/archive_test.vala'),
   dependencies: [dependency('glib-2.0'), dependency('gobject-2.0'), dependency('gio-2.0'), libarchive_dep, posix_dep],
