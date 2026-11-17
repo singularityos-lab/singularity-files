@@ -31,6 +31,7 @@ namespace Singularity.Apps {
         private string? picker_current_name = null;
         private string? picker_accept_label = null;
         private string? portal_parent = null;
+        private string? portal_caller = null;
         public bool portal_mode = false;
         public bool multiple_mode = false;
         private Stack? view_stack_ref = null;
@@ -762,6 +763,15 @@ namespace Singularity.Apps {
             }
         }
 
+        private string picker_icon() {
+            if (portal_caller != null) {
+                var info = new GLib.DesktopAppInfo(portal_caller + ".desktop");
+                string? icon = info != null ? info.get_string("Icon") : null;
+                if (icon != null && icon != "") return icon;
+            }
+            return "dev.sinty.files";
+        }
+
         public override int command_line(ApplicationCommandLine command_line) {
             var args = command_line.get_arguments();
             _startup_folder = null;
@@ -779,6 +789,7 @@ namespace Singularity.Apps {
                 }
                 else if (args[i].has_prefix("--accept-label=")) picker_accept_label = args[i].substring(15);
                 else if (args[i].has_prefix("--parent=")) portal_parent = args[i].substring(9);
+                else if (args[i].has_prefix("--caller=")) portal_caller = args[i].substring(9);
                 else if (i > 0 && !args[i].has_prefix("--")) {
                     // Positional argument: a folder to open. Accept a path or
                     // a file:// URI; relative paths resolve against the CWD
@@ -796,6 +807,7 @@ namespace Singularity.Apps {
                     }
                 }
             }
+            if (portal_mode) about_icon = picker_icon();
             activate();
             return 0;
         }
@@ -1005,19 +1017,16 @@ namespace Singularity.Apps {
             var sidebar_btn = window.add_bubble_icon("sidebar-show-symbolic", _("Toggle Sidebar (F9)"), () => {});
             sidebar_btn.visible = !picker_mode;
             // Back/Forward navigation buttons (non-picker only)
-            if (!picker_mode) {
-                back_btn = window.add_bubble_icon("go-previous-symbolic", _("Back"), () => go_back());
-                back_btn.visible = false;
-                fwd_btn = window.add_bubble_icon("go-next-symbolic", _("Forward"), () => go_forward());
-                fwd_btn.visible = false;
-            }
+            back_btn = window.add_bubble_icon("go-previous-symbolic", _("Back"), () => go_back());
+            back_btn.visible = false;
+            fwd_btn = window.add_bubble_icon("go-next-symbolic", _("Forward"), () => go_forward());
+            fwd_btn.visible = false;
             if (picker_mode) {
-                var cancel_btn = new Button.with_label(_("Cancel"));
-                cancel_btn.clicked.connect(() => {
+                var cancel_btn = window.add_bubble_text(_("Cancel"), () => {
                     window.close();
                     if (portal_mode) quit();
                 });
-                window.add_bubble_widget(cancel_btn);
+                Singularity.Focus.set_cancel(cancel_btn);
             }
             // Path bar wrapped in a Stack so we can swap it with an Entry (press "/")
             path_bar = new Box(Orientation.HORIZONTAL, 4);
@@ -1156,15 +1165,9 @@ namespace Singularity.Apps {
             path_entry_widget.changed.connect(update_path_completions);
 
             if (picker_mode) {
-                Button select_btn;
-                if (picker_accept_label != null) {
-                    select_btn = new Button.with_mnemonic(picker_accept_label);
-                } else {
-                    select_btn = new Button.with_label(save_mode ? _("Save") : directory_mode ? _("Select") : _("Open"));
-                }
-                select_btn.add_css_class("suggested-action");
-                select_btn.clicked.connect(() => submit_picker_selection());
-                window.add_bubble_widget(select_btn);
+                string accept = picker_accept_label ?? (save_mode ? _("Save") : directory_mode ? _("Select") : _("Open"));
+                var select_btn = window.add_bubble_suggested(accept, () => submit_picker_selection());
+                select_btn.use_underline = picker_accept_label != null;
             } else {
                 var search_btn = new Button.from_icon_name("system-search-symbolic");
                 search_btn.add_css_class("flat");
