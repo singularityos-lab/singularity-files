@@ -65,6 +65,7 @@ namespace Singularity.Apps {
         private Button? toolbar_search_btn = null;
         private Box? _places_box = null;
         private Gee.HashMap<string, Button> _place_buttons = new Gee.HashMap<string, Button>();
+        private Gee.ArrayList<string> _bookmark_keys = new Gee.ArrayList<string>();
         private Button? _disks_sidebar_btn = null;
         private Gtk.Label? _file_count_lbl = null;
         private Box? _bookmarks_section = null;
@@ -3697,6 +3698,8 @@ namespace Singularity.Apps {
                 _bookmarks_section.remove(child);
                 child = next;
             }
+            foreach (var k in _bookmark_keys) _place_buttons.unset(k);
+            _bookmark_keys.clear();
             var bookmarks = load_gtk_bookmarks();
             int shown_bookmarks = 0;
             foreach (var bm in bookmarks) {
@@ -3723,6 +3726,11 @@ namespace Singularity.Apps {
             row.append(img);
             row.append(new Label(name));
             btn.set_child(row);
+            string key = File.new_for_path(path).get_uri();
+            if (!_place_buttons.has_key(key)) {
+                _place_buttons[key] = btn;
+                _bookmark_keys.add(key);
+            }
             btn.clicked.connect(() => {
                 navigate_user(File.new_for_path(path));
             });
