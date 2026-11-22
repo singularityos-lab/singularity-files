@@ -181,7 +181,7 @@ namespace Singularity.Apps.Files {
             string? thumb = info.get_attribute_byte_string (FileAttribute.THUMBNAIL_PATH);
             string type = info.get_content_type () ?? "";
             Widget widget;
-            if ((thumb != null && thumb != "") || (ContentType.is_a (type, "image/*") && info.get_size () < 20 * 1024 * 1024 && file.query_exists ())) {
+            if ((thumb != null && thumb != "") || (Singularity.FileSystem.ImageTypes.can_preview (type) && info.get_size () < 20 * 1024 * 1024 && file.query_exists ())) {
                 var picture = thumb != null && thumb != "" ? new Picture.for_filename (thumb) : new Picture.for_file (file);
                 picture.content_fit = ContentFit.COVER;
                 picture.can_shrink = true;

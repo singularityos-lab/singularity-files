@@ -4604,7 +4604,7 @@ namespace Singularity.Apps {
                     && !file_item.info.get_attribute_boolean("thumbnail::is-valid")) {
                 cached = null;
             }
-            bool is_image = Files.ThumbnailStyle.for_content_type(content_type) == Files.ThumbnailStyle.PHOTO;
+            bool is_image = Singularity.FileSystem.ImageTypes.can_preview(content_type);
             if (cached == null && !is_image) {
                 apply_plugin_icon(img, file_item, size, compact);
                 return;

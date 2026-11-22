@@ -209,7 +209,7 @@ namespace Singularity.Apps {
 
         private static string kind_of (string type, string name) {
             string low = name.down ();
-            if (type.has_prefix ("image/")) return "Images";
+            if (Singularity.FileSystem.ImageTypes.can_preview (type)) return "Images";
             if (type.has_prefix ("video/")) return "Videos";
             if (type.has_prefix ("audio/")) return "Music";
             if (ArchiveFormats.is_archive_type (type) || ArchiveFormats.is_archive_name (name)) return "Archives";
