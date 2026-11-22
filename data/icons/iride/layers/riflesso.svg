@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="236" height="236" viewBox="0 0 236 236" fill="none">
+  <defs>
+    <radialGradient id="bloom_files" cx="60" cy="60" r="170" gradientUnits="userSpaceOnUse">
+      <stop stop-color="white" stop-opacity="0.2" />
+      <stop offset="1" stop-color="white" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+  <path d="M0 95.3502C0 83.1999 9.84974 73.3502 22 73.3502H84.5506C92.5455 73.3502 99.9111 69.0129 103.789 62.0215L108.611 53.3286C112.489 46.3372 119.855 42 127.849 42H217.638C219.517 42 221.384 42.2946 223.172 42.8732C229.532 44.931 234.224 50.3474 235.355 56.9352L236 60.6895V187C236 199.15 226.15 209 214 209H22C9.84974 209 0 199.15 0 187V95.3502Z" fill="url(#bloom_files)" />
+</svg>

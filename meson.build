@@ -130,6 +130,23 @@ install_data('data/icons/dev.sinty.files.svg',
   install_dir: get_option('datadir') / 'icons' / 'hicolor' / 'scalable' / 'apps'
 )
 
+iride = find_program('iride', required: get_option('iride'))
+if iride.found()
+  custom_target('iride-icon',
+    input: 'data/icons/iride/iride.json',
+    output: 'dev.sinty.files.iride',
+    depend_files: files(
+      'data/icons/iride/layers/dorso.svg',
+      'data/icons/iride/layers/fronte.svg',
+      'data/icons/iride/layers/luce-interna.svg',
+      'data/icons/iride/layers/riflesso.svg',
+    ),
+    command: [iride, 'build', meson.current_source_dir() / 'data' / 'icons' / 'iride', '@OUTPUT@'],
+    install: true,
+    install_dir: get_option('datadir') / 'icons' / 'hicolor' / 'scalable' / 'apps'
+  )
+endif
+
 install_data('data/icons/ush-penguin.svg',
   install_dir: get_option('datadir') / 'icons' / 'hicolor' / 'scalable' / 'apps'
 )

@@ -1,0 +1,161 @@
+{
+ "format": 1,
+ "canvas": [
+  236,
+  236
+ ],
+ "box": [
+  0,
+  42,
+  236,
+  209
+ ],
+ "stack": [
+  {
+   "clip": "M0 0H236V236H0Z",
+   "stack": [
+    {
+     "shadow": {
+      "dx": 0,
+      "dy": 4,
+      "blur": 5,
+      "color": "#052e52",
+      "opacity": 0.4,
+      "region": [
+       -20,
+       -20,
+       276,
+       276
+      ]
+     },
+     "stack": [
+      {
+       "layer": "layers/dorso.svg",
+       "piece": "spine"
+      },
+      {
+       "layer": "layers/fronte.svg",
+       "piece": "face-front"
+      },
+      {
+       "layer": "layers/luce-interna.svg",
+       "piece": "light"
+      },
+      {
+       "layer": "layers/riflesso.svg",
+       "piece": "light"
+      },
+      {
+       "rim": "M0 95.3502C0 83.1999 9.84974 73.3502 22 73.3502H84.5506C92.5455 73.3502 99.9111 69.0129 103.789 62.0215L108.611 53.3286C112.489 46.3372 119.855 42 127.849 42H217.638C219.517 42 221.384 42.2946 223.172 42.8732C229.532 44.931 234.224 50.3474 235.355 56.9352L236 60.6895V187C236 199.15 226.15 209 214 209H22C9.84974 209 0 199.15 0 187V95.3502Z",
+       "rule": "nonzero",
+       "piece": "edge"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "motion": [
+  {
+   "piece": "spine",
+   "origin": [
+    118,
+    207.68
+   ],
+   "tracks": [
+    {
+     "kind": "translate",
+     "from": [
+      0,
+      22
+     ],
+     "at": 0,
+     "duration": 360,
+     "ease": "spring"
+    },
+    {
+     "kind": "scale",
+     "from": [
+      0.8,
+      0.8
+     ],
+     "at": 0,
+     "duration": 360,
+     "ease": "spring"
+    },
+    {
+     "kind": "opacity",
+     "from": [
+      0
+     ],
+     "at": 0,
+     "duration": 200,
+     "ease": "out"
+    }
+   ]
+  },
+  {
+   "piece": "face-front",
+   "origin": [
+    118,
+    207.68
+   ],
+   "tracks": [
+    {
+     "kind": "tilt",
+     "from": [
+      -70
+     ],
+     "at": 200,
+     "duration": 540,
+     "ease": "spring"
+    }
+   ]
+  },
+  {
+   "piece": "light",
+   "origin": [
+    118,
+    207.68
+   ],
+   "tracks": [
+    {
+     "kind": "tilt",
+     "from": [
+      -70
+     ],
+     "at": 200,
+     "duration": 540,
+     "ease": "spring"
+    },
+    {
+     "kind": "opacity",
+     "from": [
+      0
+     ],
+     "at": 480,
+     "duration": 290,
+     "ease": "out"
+    }
+   ]
+  },
+  {
+   "piece": "edge",
+   "origin": [
+    118,
+    207.68
+   ],
+   "tracks": [
+    {
+     "kind": "tilt",
+     "from": [
+      -70
+     ],
+     "at": 200,
+     "duration": 540,
+     "ease": "spring"
+    }
+   ]
+  }
+ ]
+}
