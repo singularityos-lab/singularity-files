@@ -151,6 +151,30 @@ install_data('data/icons/ush-penguin.svg',
   install_dir: get_option('datadir') / 'icons' / 'hicolor' / 'scalable' / 'apps'
 )
 
+if iride.found()
+  custom_target('iride-icon-ush-penguin',
+    input: 'data/icons/iride/ush-penguin/iride.json',
+    output: 'ush-penguin.iride',
+    depend_files: files(
+      'data/icons/iride/ush-penguin/layers/000.svg',
+      'data/icons/iride/ush-penguin/layers/001.svg',
+      'data/icons/iride/ush-penguin/layers/002.svg',
+      'data/icons/iride/ush-penguin/layers/003.svg',
+      'data/icons/iride/ush-penguin/layers/004.svg',
+      'data/icons/iride/ush-penguin/layers/005.svg',
+      'data/icons/iride/ush-penguin/layers/006.svg',
+      'data/icons/iride/ush-penguin/layers/007.svg',
+      'data/icons/iride/ush-penguin/layers/008.svg',
+      'data/icons/iride/ush-penguin/layers/009.svg',
+      'data/icons/iride/ush-penguin/layers/010.svg',
+      'data/icons/iride/ush-penguin/layers/011.svg',
+    ),
+    command: [iride, 'build', meson.current_source_dir() / 'data' / 'icons' / 'iride' / 'ush-penguin', '@OUTPUT@'],
+    install: true,
+    install_dir: get_option('datadir') / 'icons' / 'hicolor' / 'scalable' / 'apps'
+  )
+endif
+
 install_data('data/icons/ush-penguin-symbolic.svg',
   install_dir: get_option('datadir') / 'icons' / 'hicolor' / 'scalable' / 'apps'
 )
