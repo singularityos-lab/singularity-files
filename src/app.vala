@@ -8,7 +8,7 @@ namespace Singularity.Apps {
 
     public delegate void StorageEntryFunc(string name, string icon, string? path, GLib.Volume? volume);
 
-    public class FilesApp : Singularity.Application {
+    public class FilesApp : Singularity.Application, Singularity.Migration.Migratable {
         private Files.FileOpsManager? _ops = null;
         private Gtk.Revealer? _ops_banner = null;
         private Gtk.ProgressBar? _ops_progress_bar = null;
@@ -628,6 +628,85 @@ namespace Singularity.Apps {
                     Process.spawn_command_line_async("singularity-files");
                 }
             } catch (Error e) { warning("new window: %s", e.message); }
+        }
+
+        public void prepare_move() throws Singularity.Migration.MigrationError {
+            if (_ops != null && _ops.active_count() > 0)
+                throw new Singularity.Migration.MigrationError.UNSUPPORTED(_("Files is still copying or moving files. Move it when they are done."));
+        }
+
+        public Variant save_model() {
+            return new VariantDict().end();
+        }
+
+        public async void restore_model(Variant model) throws Error {
+        }
+
+        public string window_kind(Gtk.Window w) {
+            return (w is FilesWindow && w == active_window) ? "files" : "";
+        }
+
+        public Variant save_window(Gtk.Window w) {
+            var history = new VariantBuilder(new VariantType("as"));
+            foreach (var f in nav_history) history.add("s", Singularity.Migration.portable_path(f));
+            string location;
+            if (view_stack_ref != null && view_stack_ref.visible_child_name == "disks") location = "disks";
+            else if (_cloud_view != null && _cloud_view.active) location = "cloud";
+            else if (current_folder == null) location = "recent";
+            else location = Singularity.Migration.portable_path(current_folder);
+            var d = new VariantDict();
+            d.insert_value("location", new Variant.string(location));
+            d.insert_value("history", history.end());
+            d.insert_value("index", new Variant.int32(nav_index));
+            d.insert_value("search", new Variant.string(current_search));
+            if (location == "cloud") d.insert_value("cloud", _cloud_view.save_state());
+            return d.end();
+        }
+
+        public async Gtk.Window? rebuild_window(string kind, Variant data) throws Error {
+            if (kind != "files" || picker_mode) return null;
+            var d = new VariantDict(data);
+            string location = (d.lookup_value("location", VariantType.STRING) ?? new Variant.string("~")).get_string();
+            File? folder = null;
+            if (location != "disks" && location != "cloud" && location != "recent") {
+                folder = Singularity.Migration.local_file(location);
+                if (folder.get_uri() != "smb://" && !folder.query_exists(null)) folder = File.new_for_path(Environment.get_home_dir());
+            }
+            _startup_folder = folder != null && folder.get_uri() != "smb://" ? folder : null;
+            foreach (var old in get_windows().copy()) {
+                if (old is FilesWindow) old.close();
+            }
+            activate();
+            _startup_folder = null;
+            navigation_generation++;
+            File[] history = {};
+            foreach (string p in (d.lookup_value("history", VariantType.STRING_ARRAY) ?? new Variant.strv({})).get_strv())
+                history += Singularity.Migration.local_file(p);
+            int index = (d.lookup_value("index", VariantType.INT32) ?? new Variant.int32(-1)).get_int32();
+            if (history.length > 0 && index >= 0 && index < history.length) {
+                nav_history = history;
+                nav_index = index;
+            }
+            update_nav_buttons();
+            string search = (d.lookup_value("search", VariantType.STRING) ?? new Variant.string("")).get_string();
+            if (location == "disks") {
+                show_disks_page();
+            } else if (location == "cloud") {
+                var cloud = d.lookup_value("cloud", new VariantType("(sa(ss))"));
+                if (_cloud_view == null || cloud == null || !_cloud_view.restore_state(cloud)) yield navigate_to(File.new_for_path(Environment.get_home_dir()));
+            } else if (location == "recent") {
+                navigate_to_uri("recent://");
+            } else if (folder.get_uri() == "smb://") {
+                navigate_to_uri("smb://");
+            } else {
+                if (search != "" && path_bar_stack != null) {
+                    path_bar_stack.visible_child_name = "search";
+                    search_entry_widget.text = search;
+                    current_search = search;
+                }
+                yield navigate_to(folder);
+            }
+            return active_window;
         }
 
         private void open_selected() {

@@ -194,6 +194,31 @@ namespace Singularity.Apps.Files {
             reload();
         }
 
+        public Variant save_state() {
+            var folders = new VariantBuilder(new VariantType("a(ss)"));
+            for (int i = 1; i < trail.size; i++) folders.add("(ss)", trail[i].id, trail[i].name);
+            return new Variant("(s@a(ss))", account != null ? account.id : "", folders.end());
+        }
+
+        public bool restore_state(Variant state) {
+            string id;
+            VariantIter folders;
+            state.get("(sa(ss))", out id, out folders);
+            var target = Manager.get_default().get_account(id);
+            if (target == null) return false;
+            open_account(target);
+            string folder_id, name;
+            while (folders.next("(ss)", out folder_id, out name)) {
+                var entry = new CloudEntry();
+                entry.id = folder_id;
+                entry.name = name;
+                entry.is_folder = true;
+                trail.add(entry);
+            }
+            if (trail.size > 1) reload();
+            return true;
+        }
+
         private CloudEntry current_folder() {
             return trail[trail.size - 1];
         }
