@@ -8,7 +8,7 @@ namespace Singularity.Apps {
 
     public delegate void StorageEntryFunc(string name, string icon, string? path, GLib.Volume? volume);
 
-    public class FilesApp : Singularity.Application, Singularity.Migration.Migratable {
+    public class FilesApp : Singularity.Application, Singularity.Migration.Migratable, Singularity.Startup.Bootable {
         private Files.FileOpsManager? _ops = null;
         private Gtk.Revealer? _ops_banner = null;
         private Gtk.ProgressBar? _ops_progress_bar = null;
@@ -692,7 +692,7 @@ namespace Singularity.Apps {
             foreach (var old in get_windows().copy()) {
                 if (old is FilesWindow) old.close();
             }
-            activate();
+            show_window();
             _startup_folder = null;
             navigation_generation++;
             File[] history = {};
@@ -1067,7 +1067,30 @@ namespace Singularity.Apps {
             });
         }
 
-        protected override void activate() {
+        public Singularity.Startup.Plan build_plan(Singularity.Startup.Request request) {
+            var plan = new Singularity.Startup.Plan();
+            plan.version = "files-1";
+            if (request.kind == Singularity.Startup.RequestKind.SERVICE) {
+                plan.main("ready", Singularity.Startup.Category.PREPARE, (c) => {})
+                    .reaches(Singularity.Startup.Milestone.SHELL_READY)
+                    .reaches(Singularity.Startup.Milestone.CONTENT_READY)
+                    .reaches(Singularity.Startup.Milestone.INTERACTIVE);
+                return plan;
+            }
+            plan.main("window", Singularity.Startup.Category.SHELL, (c) => {
+                show_window();
+                c.window = active_window;
+            }).reaches(Singularity.Startup.Milestone.SHELL_READY)
+              .reaches(Singularity.Startup.Milestone.CONTENT_READY)
+              .reaches(Singularity.Startup.Milestone.INTERACTIVE);
+            return plan;
+        }
+
+        public void handle_request(Singularity.Startup.Request request) {
+            show_window();
+        }
+
+        private void show_window() {
             if (!picker_mode && !portal_mode) ensure_global_menu_name();
             string title = "Files";
             if (picker_mode) {
