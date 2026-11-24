@@ -646,6 +646,22 @@ namespace Singularity.Apps {
             return (w is FilesWindow && w == active_window) ? "files" : "";
         }
 
+        private void stop_watching() {
+            navigation_generation++;
+            if (folder_refresh_id != 0) {
+                Source.remove(folder_refresh_id);
+                folder_refresh_id = 0;
+            }
+            if (folder_monitor != null) {
+                folder_monitor.cancel();
+                folder_monitor = null;
+            }
+        }
+
+        public void release_window(Gtk.Window w) {
+            if (window_kind(w) != "") stop_watching();
+        }
+
         public Variant save_window(Gtk.Window w) {
             var history = new VariantBuilder(new VariantType("as"));
             foreach (var f in nav_history) history.add("s", Singularity.Migration.portable_path(f));
@@ -1075,15 +1091,7 @@ namespace Singularity.Apps {
 
             active_window = window;
             window.close_request.connect(() => {
-                navigation_generation++;
-                if (folder_refresh_id != 0) {
-                    Source.remove(folder_refresh_id);
-                    folder_refresh_id = 0;
-                }
-                if (folder_monitor != null) {
-                    folder_monitor.cancel();
-                    folder_monitor = null;
-                }
+                stop_watching();
                 return false;
             });
             window.set_title(title);
